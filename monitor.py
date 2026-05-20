@@ -269,7 +269,20 @@ def get_satellite_stats(farm: dict, coords: list, farm_polygon, days_back: int =
         pass
 
     ndre_stress = ndre_mean < 0.2 and ndre_mean > 0
-    status = "stress" if stress_pct > 10 else "ok"
+
+    # Days since sowing — determines status
+    sowing_date_str = farm.get("sowing_date")
+    days_since_sowing = None
+    if sowing_date_str:
+        sowing_dt = datetime.fromisoformat(sowing_date_str).replace(tzinfo=timezone.utc)
+        days_since_sowing = (datetime.now(timezone.utc) - sowing_dt).days
+
+    if days_since_sowing is not None and days_since_sowing < 0:
+        status = "pre_sowing"
+    elif days_since_sowing is not None and days_since_sowing < 21:
+        status = "germination"
+    else:
+        status = "stress" if stress_pct > 10 else "ok"
 
     return {
         "date": end_str, "status": status, "crop": crop,
@@ -280,6 +293,7 @@ def get_satellite_stats(farm: dict, coords: list, farm_polygon, days_back: int =
         "cloud_pct": avg_cloud, "image_count": count,
         "ndvi_last_year": ndvi_last_year,
         "soil_vv_db": soil_vv_db, "soil_moisture_label": soil_moisture_label,
+        "days_since_sowing": days_since_sowing,
     }
 
 
@@ -409,6 +423,88 @@ def send_telegram_alert(farm: dict, stats: dict, map_path: Path | None = None, d
 # Message formatter
 # ---------------------------------------------------------------------------
 
+def _sowing_advisory(crop: str, days: int, stats: dict, w: dict) -> str:
+    """Return plain-language what-to-do advice based on crop growth stage."""
+    sm0 = w.get("soil_moisture_pct_0") or 0
+    rain_7d = w.get("rain_7d_mm") or 0
+    temp = w.get("temp_c") or 30
+
+    if days < 0:
+        return ""
+
+    # Soybean growth stages
+    if crop.lower() == "soybean":
+        if days == 0:
+            stage, advice = "Sowing day", [
+                "Sow at 2–3 cm depth, row spacing 30–45 cm",
+                "Apply basal dose: DAP 50 kg/acre + potash 25 kg/acre",
+                "Seed treatment with Rhizobium + PSB culture recommended",
+                "Ensure soil moisture is adequate before sowing",
+            ]
+        elif days <= 7:
+            stage, advice = "Germination (Week 1)", [
+                "Keep soil moist — do not let surface crust form",
+                "Watch for poor germination patches (may need gap filling by day 10)",
+                "No fertiliser needed yet",
+                f"{'⚠️ Soil looks dry — light irrigation recommended' if sm0 < 40 else '✓ Soil moisture looks fine'}",
+            ]
+        elif days <= 21:
+            stage, advice = "Seedling stage (Week 2–3)", [
+                "Gap filling if germination <70% — resow in patches",
+                "First weeding: manual or pre-emergence herbicide by day 20",
+                "Watch for stem fly and leaf miner attack",
+                f"{'⚠️ Irrigate — low rainfall this week' if rain_7d < 15 else '✓ Rainfall adequate this week'}",
+            ]
+        elif days <= 35:
+            stage, advice = "Vegetative growth (Week 4–5)", [
+                "Apply urea top dressing: 20 kg/acre",
+                "Second weeding if first was missed",
+                "Spray for girdle beetle if stem damage seen",
+                f"{'🔥 Heat stress risk — irrigate in evening' if temp > 36 else '✓ Temperature ok for growth'}",
+            ]
+        elif days <= 55:
+            stage, advice = "Flowering (Week 6–8) — critical stage", [
+                "Do NOT miss irrigation during flowering — yield loss is permanent",
+                "Spray boron 0.2% + molybdenum 0.05% to improve pod set",
+                "Watch for whitefly and yellow mosaic virus",
+                "Avoid pesticide spray during open flower hours (6–10 AM)",
+                f"{'⚠️ Low rain — irrigate immediately, flowering stage cannot be missed' if rain_7d < 20 else '✓ Moisture ok for flowering'}",
+            ]
+        elif days <= 80:
+            stage, advice = "Pod filling (Week 9–11)", [
+                "Keep field moist — pod fill directly affects grain weight",
+                "Spray potassium nitrate 1% to improve seed size",
+                "Monitor for pod borer and leaf eating caterpillar",
+                f"{'⚠️ Dry conditions — irrigate for pod fill' if rain_7d < 15 else '✓ Rain adequate for pod fill'}",
+            ]
+        elif days <= 100:
+            stage, advice = "Maturity (Week 12–14)", [
+                "Stop irrigation 10–12 days before expected harvest",
+                "Watch for pod shattering in dry hot winds",
+                "Harvest when 95% pods turn brown (moisture ~18%)",
+                "Avoid harvesting in afternoon heat — do morning harvest",
+            ]
+        else:
+            stage, advice = "Post harvest", [
+                "Deep plough field to break pest cycle",
+                "Apply 2–3 tonnes FYM/acre before next crop",
+                "Update sowing_date in farms.json for next season",
+            ]
+    else:
+        # Generic advice for other crops
+        if days <= 21:
+            stage, advice = "Early growth", ["Ensure good germination", "First weeding by day 20"]
+        elif days <= 50:
+            stage, advice = "Vegetative", ["Top dress with nitrogen", "Monitor for pests"]
+        elif days <= 80:
+            stage, advice = "Flowering/fruiting — critical", ["Do not miss irrigation", "Monitor closely"]
+        else:
+            stage, advice = "Maturity", ["Prepare for harvest", "Reduce irrigation"]
+
+    advice_lines = "\n".join(f"  • {a}" for a in advice)
+    return f"<b>🌱 Stage: {stage}</b> (Day {days})\n{advice_lines}"
+
+
 def _bar(value: float, max_val: float, length: int = 8) -> str:
     filled = min(length, round((value / max_val) * length))
     return "🟩" * filled + "⬜" * (length - filled)
@@ -434,8 +530,14 @@ def _format_alert(farm: dict, stats: dict) -> str:
     area_str   = f"{area_bigha} bigha ({area_sqm:,} m²)" if area_sqm else f"{area_bigha} bigha"
 
     # Status badge
-    badges = {"stress": "🔴 STRESS DETECTED", "no_data": "☁️ NO SATELLITE DATA", "ok": "🟢 CROP HEALTHY"}
-    badge  = badges.get(status, "🟡 UNKNOWN")
+    badges = {
+        "stress":      "🔴 STRESS DETECTED",
+        "no_data":     "☁️ NO SATELLITE DATA",
+        "ok":          "🟢 CROP HEALTHY",
+        "pre_sowing":  "🌾 FIELD READY — AWAITING SOWING",
+        "germination": "🌱 GERMINATION PHASE",
+    }
+    badge = badges.get(status, "🟡 UNKNOWN")
 
     # ── HEADER ───────────────────────────────────────────────────────────────
     header = (
@@ -445,7 +547,45 @@ def _format_alert(farm: dict, stats: dict) -> str:
     )
 
     if status == "no_data":
-        return f"{header}\n\n⚠️ {stats.get('reason', 'No cloud-free imagery available.')}\nWill auto-retry in 2–3 days."
+        return f"{header}\n\nNo cloud-free satellite image available.\nWill auto-retry in 2–3 days."
+
+    days_since_sowing = stats.get("days_since_sowing")
+    sowing_date = farm.get("sowing_date", "not set")
+
+    if status == "pre_sowing":
+        days_to_sow = abs(days_since_sowing) if days_since_sowing is not None else "?"
+        w = stats.get("weather", {})
+        sm0 = w.get("soil_moisture_pct_0")
+        temp = w.get("temp_c")
+        rain_7d = w.get("rain_7d_mm", 0)
+
+        soil_ready = sm0 and 40 <= sm0 <= 80
+        temp_ok    = temp and temp < 38
+
+        readiness = []
+        readiness.append(f"💧 Soil moisture: <b>{sm0}%</b> {'✓ good for sowing' if soil_ready else '⚠️ too dry — irrigate before sowing' if sm0 and sm0 < 40 else '⚠️ too wet — wait for drainage'}")
+        readiness.append(f"🌡️ Temperature: <b>{temp}°C</b> {'✓ good' if temp_ok else '⚠️ too hot — sow in evening or early morning'}")
+        readiness.append(f"🌧️ Rain this week: <b>{rain_7d} mm</b> {'✓' if rain_7d > 20 else '— irrigate to prep seedbed'}")
+
+        advisory = _sowing_advisory("soybean", 0, stats, w)
+
+        return (
+            f"{header}\n\n"
+            f"📍 <b>Current field state — bare soil, ready for kharif sowing</b>\n"
+            f"Sowing planned: <b>{sowing_date}</b> ({days_to_sow} days away)\n\n"
+            f"<b>🔍 Field Readiness</b>\n" + "\n".join(readiness) + "\n\n"
+            f"{advisory}\n\n"
+            f"<i>Satellite sees bare soil — stress alert will activate once crop is growing</i>"
+        )
+
+    if status == "germination":
+        days = days_since_sowing or 0
+        w    = stats.get("weather", {})
+        return (
+            f"{header}\n\n"
+            f"Seeds sown <b>{days} days ago</b> — germination phase.\n\n"
+            + _sowing_advisory("soybean", days, stats, w)
+        )
 
     # ── SATELLITE INDICES ────────────────────────────────────────────────────
     ndvi_mean  = stats.get("ndvi_mean", 0)
@@ -584,11 +724,18 @@ def _format_alert(farm: dict, stats: dict) -> str:
     # ── FOOTER ───────────────────────────────────────────────────────────────
     footer = f"<i>Sentinel-2 · {stats.get('cloud_pct')}% cloud · Open-Meteo weather · auto-scan</i>"
 
+    # Sowing advisory
+    days_since_sowing = stats.get("days_since_sowing")
+    advisory_block = ""
+    if days_since_sowing is not None:
+        advisory_block = _sowing_advisory(stats.get("crop", "soybean"), days_since_sowing, stats, w)
+
     parts = [header, sat_block, stress_block]
-    if weather_block: parts.append(weather_block)
-    if soil_block:    parts.append(soil_block)
-    if forecast_block: parts.append(forecast_block)
-    if advice_block:  parts.append(advice_block)
+    if weather_block:   parts.append(weather_block)
+    if soil_block:      parts.append(soil_block)
+    if forecast_block:  parts.append(forecast_block)
+    if advice_block:    parts.append(advice_block)
+    if advisory_block:  parts.append(advisory_block)
     parts.append(footer)
 
     return "\n\n".join(parts)
@@ -664,7 +811,7 @@ def main() -> None:
             from dashboard import publish_dashboard
             dashboard_url = publish_dashboard(farm, stats)
 
-            if stats["status"] in ("stress", "no_data") or args.force:
+            if stats["status"] in ("stress", "no_data", "pre_sowing", "germination") or args.force:
                 print("\nSending Telegram alert...")
                 send_telegram_alert(farm, stats, map_path=map_path_sent, dashboard_url=dashboard_url)
             else:
