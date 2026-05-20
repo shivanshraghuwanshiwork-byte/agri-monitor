@@ -1,0 +1,6 @@
+earthengine-api
+geemap
+python-dotenv
+requests
+pillow
+google-cloud-storage

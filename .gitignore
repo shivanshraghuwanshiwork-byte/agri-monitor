@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+maps/*.png
+maps/*.html
+.vscode/
