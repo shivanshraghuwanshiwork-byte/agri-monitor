@@ -715,64 +715,58 @@ function renderZones() {{
 renderZones();
 
 // ── Grid overlay ─────────────────────────────────────────────────────────
-// Cell size in degrees at each zoom level (roughly 50–80m wide cells on screen)
-const GRID_DEG = {{
-  14: 0.003, 15: 0.0015, 16: 0.0008, 17: 0.0004,
-  18: 0.0002, 19: 0.0001, 20: 0.00005, 21: 0.000025,
-}};
+// Cell size in degrees per zoom level — each step ~80-150m wide on screen
+const GRID_DEG = {{14:0.003,15:0.0015,16:0.0008,17:0.0004,18:0.0002,19:0.0001,20:0.00005,21:0.000025}};
 
 function buildGrid() {{
   if (gridLayer) {{ map.removeLayer(gridLayer); gridLayer = null; }}
-  const z = map.getZoom();
-  const step = GRID_DEG[Math.round(z)] || GRID_DEG[Math.max(14, Math.min(21, Math.round(z)))] || 0.001;
-
+  const z = Math.min(21, Math.max(14, Math.round(map.getZoom())));
+  const step = GRID_DEG[z];
   gridLayer = L.layerGroup().addTo(map);
 
   farmData.features.forEach(feat => {{
-    const poly = turf.polygon(feat.geometry.coordinates);
-    const bb = turf.bbox(poly);                    // [minLng, minLat, maxLng, maxLat]
+    const ring = feat.geometry.coordinates[0];
+    // GeoJSON rings must be closed for turf — add first point at end if missing
+    const closed = (ring[0][0]===ring[ring.length-1][0] && ring[0][1]===ring[ring.length-1][1])
+      ? ring : [...ring, ring[0]];
+    const poly = turf.polygon([closed]);
+    const bb = turf.bbox(poly);   // [minLng, minLat, maxLng, maxLat]
     const plotName = feat.properties.name;
 
-    // Snap grid origin to step multiples so cells are stable across pans
+    // Snap origin so grid is stable while panning
     const x0 = Math.floor(bb[0] / step) * step;
     const y0 = Math.floor(bb[1] / step) * step;
 
-    for (let x = x0; x < bb[2]; x += step) {{
-      for (let y = y0; y < bb[3]; y += step) {{
-        const cell = turf.polygon([[
-          [x,      y],
-          [x+step, y],
-          [x+step, y+step],
-          [x,      y+step],
-          [x,      y],
-        ]]);
-        const clipped = turf.intersect(poly, cell);
-        if (!clipped) continue;
+    for (let x = x0; x < bb[2] + step; x += step) {{
+      for (let y = y0; y < bb[3] + step; y += step) {{
+        const cx = x + step / 2, cy = y + step / 2;
+        // Only draw cells whose centre is inside the plot polygon
+        if (!turf.booleanPointInPolygon(turf.point([cx, cy]), poly)) continue;
 
-        // Only keep cells with meaningful area (> 2% of a full cell)
-        const cellSqm = step * step * 111000 * 111000 * Math.cos(y * Math.PI / 180);
-        const clippedSqm = calcAreaSqm(clipped.geometry.coordinates[0]);
-        if (clippedSqm < cellSqm * 0.02) continue;
-
-        const lyr = L.geoJSON(clipped, {{
-          style: {{ color:'#fdd835', weight:1, fillColor:'#fdd835', fillOpacity:0.08, dashArray:'3 3' }},
+        const sqm = calcAreaSqm([[x,y],[x+step,y],[x+step,y+step],[x,y+step]]);
+        // L.rectangle takes [[lat,lng],[lat,lng]] (Leaflet is lat/lng order)
+        const rect = L.rectangle([[y, x],[y+step, x+step]], {{
+          color:'#fdd835', weight:1.5, fillColor:'#fdd835',
+          fillOpacity:0.15, dashArray:'4 3',
         }}).addTo(gridLayer);
 
-        lyr.on('mouseover', () => lyr.setStyle({{ fillOpacity:0.3, weight:2 }}));
-        lyr.on('mouseout',  () => lyr.setStyle({{ fillOpacity:0.08, weight:1 }}));
-        lyr.on('click', e => {{
+        rect.on('mouseover', () => rect.setStyle({{fillOpacity:0.45, weight:2.5, color:'#fff'}}));
+        rect.on('mouseout',  () => rect.setStyle({{fillOpacity:0.15, weight:1.5, color:'#fdd835'}}));
+        rect.on('click', e => {{
           L.DomEvent.stopPropagation(e);
-          pendingGeojson = clipped.geometry;
-          const sqm = clippedSqm;
-          const cx = (x + x + step) / 2, cy = (y + y + step) / 2;
-          openZoneForm(null, sqm, plotName + ' — cell');
+          const cellGeo = {{
+            type: 'Polygon',
+            coordinates: [[[x,y],[x+step,y],[x+step,y+step],[x,y+step],[x,y]]],
+          }};
+          pendingGeojson = cellGeo;
+          openZoneForm(null, sqm, plotName + ' zone');
         }});
       }}
     }}
   }});
 }}
 
-// Rebuild grid when zoom changes (cell size changes)
+// Rebuild grid on zoom so cell sizes stay sensible
 map.on('zoomend', () => {{ if (currentMode === 'grid') buildGrid(); }});
 
 // ── Mode switching ────────────────────────────────────────────────────────
