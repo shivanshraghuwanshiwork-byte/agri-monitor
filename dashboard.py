@@ -170,6 +170,7 @@ def build_html(farm: dict, stats: dict) -> str:
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+<style>.leaflet-draw-toolbar,.leaflet-draw-section{{display:none!important}}</style>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 html,body{{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e8eaf0;font-size:14px}}
@@ -234,14 +235,8 @@ input:focus,select:focus{{border-color:#4fc3f7}}
 select option{{background:#1e2130}}
 textarea{{resize:vertical;min-height:60px}}
 
-/* Custom fields */
-#custom-fields{{margin-bottom:12px}}
-.custom-field{{display:flex;gap:8px;margin-bottom:7px;align-items:center}}
-.custom-field input{{flex:1}}
-.cf-remove{{background:none;border:none;color:#8890a8;cursor:pointer;font-size:1.1em;padding:0 4px}}
-.cf-remove:hover{{color:#e53935}}
-#add-field-btn{{background:none;border:1.5px dashed #3a3d4a;color:#8890a8;padding:6px 14px;border-radius:8px;font-size:0.8em;cursor:pointer;display:flex;align-items:center;gap:5px;transition:all .2s}}
-#add-field-btn:hover{{border-color:#4fc3f7;color:#4fc3f7}}
+/* Section divider inside form */
+.form-section-label{{grid-column:1/-1;font-size:0.68em;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#4fc3f7;padding-top:10px;border-top:1px solid #2a2d3a;margin-top:4px}}
 
 .form-actions{{display:flex;gap:10px;justify-content:flex-end}}
 .btn-cancel{{background:none;border:1px solid #3a3d4a;color:#8890a8;padding:8px 18px;border-radius:8px;cursor:pointer;font-size:0.85em}}
@@ -290,23 +285,106 @@ textarea{{resize:vertical;min-height:60px}}
     </div>
 
     <div class="form-grid">
+
+      <!-- ── Basic info ── -->
+      <div class="form-section-label">Basic Info</div>
+
       <div class="form-group">
         <label>Zone / Field Name *</label>
-        <input id="z-name" type="text" placeholder="e.g. North Section">
+        <input id="z-name" type="text" placeholder="e.g. North Section, Khasra 45">
       </div>
+      <div class="form-group">
+        <label>Khasra / Survey No.</label>
+        <input id="z-khasra" type="text" placeholder="e.g. 123/2">
+      </div>
+      <div class="form-group">
+        <label>Land Type</label>
+        <select id="z-land-type">
+          <option value="">— Select —</option>
+          <option value="Irrigated">Irrigated (सिंचित)</option>
+          <option value="Rain-fed">Rain-fed (बारानी)</option>
+          <option value="Upland">Upland (ऊँची ज़मीन)</option>
+          <option value="Lowland">Lowland / Flood-prone (निचली ज़मीन)</option>
+          <option value="Bund / Ridge">Bund / Ridge land</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Soil Type</label>
+        <select id="z-soil">
+          <option value="">— Select —</option>
+          <option value="Black cotton">Black cotton / Vertisol (काली मिट्टी)</option>
+          <option value="Red laterite">Red laterite (लाल मिट्टी)</option>
+          <option value="Alluvial loam">Alluvial loam (दोमट)</option>
+          <option value="Sandy loam">Sandy loam (बलुई दोमट)</option>
+          <option value="Clay">Heavy clay (चिकनी)</option>
+          <option value="Sandy">Sandy (बलुई)</option>
+          <option value="Saline / Usar">Saline / Usar (ऊसर)</option>
+        </select>
+      </div>
+
+      <!-- ── Crop ── -->
+      <div class="form-section-label">Crop Details</div>
+
       <div class="form-group">
         <label>Crop Sowed</label>
         <select id="z-crop">
           <option value="">— Select crop —</option>
-          <option value="Soybean">Soybean (खरीफ)</option>
-          <option value="Wheat">Wheat (रबी)</option>
-          <option value="Chickpea">Chickpea / Chana</option>
-          <option value="Mustard">Mustard / Sarson</option>
-          <option value="Maize">Maize / Makka</option>
-          <option value="Cotton">Cotton</option>
-          <option value="Groundnut">Groundnut / Moongfali</option>
-          <option value="Fallow">Fallow / Khali</option>
-          <option value="Other">Other</option>
+          <optgroup label="Kharif (खरीफ)">
+            <option value="Soybean">Soybean (सोयाबीन)</option>
+            <option value="Maize">Maize / Makka (मक्का)</option>
+            <option value="Groundnut">Groundnut (मूंगफली)</option>
+            <option value="Cotton">Cotton (कपास)</option>
+            <option value="Urad Dal">Urad Dal (उड़द)</option>
+            <option value="Moong Dal">Moong Dal (मूंग)</option>
+            <option value="Arhar / Tur">Arhar / Tur Dal (अरहर)</option>
+            <option value="Sesame">Sesame / Til (तिल)</option>
+            <option value="Jowar">Jowar (ज्वार)</option>
+            <option value="Bajra">Bajra (बाजरा)</option>
+            <option value="Rice">Paddy / Rice (धान)</option>
+          </optgroup>
+          <optgroup label="Rabi (रबी)">
+            <option value="Wheat">Wheat (गेहूँ)</option>
+            <option value="Chickpea">Chickpea / Chana (चना)</option>
+            <option value="Mustard">Mustard / Sarson (सरसों)</option>
+            <option value="Lentil">Lentil / Masoor (मसूर)</option>
+            <option value="Garlic">Garlic (लहसुन)</option>
+            <option value="Onion">Onion (प्याज)</option>
+            <option value="Potato">Potato (आलू)</option>
+          </optgroup>
+          <optgroup label="Other">
+            <option value="Sugarcane">Sugarcane (गन्ना)</option>
+            <option value="Banana">Banana (केला)</option>
+            <option value="Vegetable">Vegetables (सब्ज़ी)</option>
+            <option value="Fallow">Fallow / Khali (खाली)</option>
+            <option value="Other">Other</option>
+          </optgroup>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Seed Variety</label>
+        <select id="z-variety">
+          <option value="">— Select variety —</option>
+          <optgroup label="Soybean">
+            <option value="JS 9305">JS 9305</option>
+            <option value="JS 335">JS 335</option>
+            <option value="JS 9560">JS 9560</option>
+            <option value="RKS 24">RKS 24</option>
+            <option value="MACS 450">MACS 450</option>
+            <option value="NRC 7">NRC 7</option>
+          </optgroup>
+          <optgroup label="Wheat">
+            <option value="GW 322">GW 322</option>
+            <option value="HI 8498">HI 8498 (Malav Shakti)</option>
+            <option value="MP 3173">MP 3173</option>
+            <option value="Raj 4120">Raj 4120</option>
+          </optgroup>
+          <optgroup label="Maize">
+            <option value="DKC 9108">DKC 9108</option>
+            <option value="NK 6240">NK 6240</option>
+            <option value="PAC 740">PAC 740</option>
+          </optgroup>
+          <option value="Local / Desi">Local / Desi variety</option>
+          <option value="Other">Other (fill in notes)</option>
         </select>
       </div>
       <div class="form-group">
@@ -314,51 +392,180 @@ textarea{{resize:vertical;min-height:60px}}
         <input id="z-sowing" type="date">
       </div>
       <div class="form-group">
-        <label>Last Irrigation Date</label>
-        <input id="z-irrigation" type="date">
+        <label>Seed Rate</label>
+        <select id="z-seed-rate">
+          <option value="">— Select —</option>
+          <option value="20–25 kg/acre">20–25 kg/acre (Soybean standard)</option>
+          <option value="30–35 kg/acre">30–35 kg/acre (Soybean heavy)</option>
+          <option value="40–45 kg/acre">40–45 kg/acre (Wheat)</option>
+          <option value="8–10 kg/acre">8–10 kg/acre (Maize hybrid)</option>
+          <option value="3–4 kg/acre">3–4 kg/acre (Cotton / Bajra)</option>
+          <option value="6–8 kg/acre">6–8 kg/acre (Chickpea / Arhar)</option>
+          <option value="Other">Other (fill in notes)</option>
+        </select>
       </div>
+      <div class="form-group">
+        <label>Seed Treatment</label>
+        <select id="z-seed-treat">
+          <option value="">— Select —</option>
+          <option value="Rhizobium + PSB">Rhizobium + PSB inoculant (Soybean)</option>
+          <option value="Thiram + Carbendazim">Thiram + Carbendazim (fungicide)</option>
+          <option value="Imidacloprid">Imidacloprid (insecticide seed coat)</option>
+          <option value="Trichoderma">Trichoderma (bio-fungicide)</option>
+          <option value="Bavistin">Bavistin (Carbendazim)</option>
+          <option value="No treatment">No treatment</option>
+          <option value="Other">Other (fill in notes)</option>
+        </select>
+      </div>
+
+      <!-- ── Irrigation ── -->
+      <div class="form-section-label">Irrigation</div>
+
       <div class="form-group">
         <label>Irrigation Method</label>
         <select id="z-irr-method">
           <option value="">— Select —</option>
-          <option value="Flood">Flood irrigation (बाढ़ सिंचाई)</option>
+          <option value="Flood">Flood / Furrow (बाढ़ सिंचाई)</option>
           <option value="Drip">Drip irrigation (टपक)</option>
-          <option value="Sprinkler">Sprinkler</option>
+          <option value="Sprinkler">Sprinkler / Mini sprinkler</option>
           <option value="Canal">Canal water (नहर)</option>
           <option value="Borewell">Borewell / Tubewell</option>
+          <option value="Open well">Open well (कुआँ)</option>
+          <option value="Farm pond">Farm pond (तालाब)</option>
           <option value="Rain-fed">Rain-fed only (बारानी)</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Soil Type</label>
-        <select id="z-soil">
+        <label>Water Source</label>
+        <select id="z-water-source">
           <option value="">— Select —</option>
-          <option value="Black cotton">Black cotton (काली मिट्टी)</option>
-          <option value="Red">Red soil (लाल मिट्टी)</option>
-          <option value="Alluvial">Alluvial (दोमट)</option>
-          <option value="Sandy">Sandy (बलुई)</option>
-          <option value="Clay">Clay (चिकनी)</option>
+          <option value="Borewell">Borewell / Tubewell</option>
+          <option value="Canal">Canal (नहर)</option>
+          <option value="River / Nala">River / Nala</option>
+          <option value="Farm pond">Farm pond</option>
+          <option value="Open well">Open well (कुआँ)</option>
+          <option value="Tanker">Water tanker</option>
+          <option value="Rain-fed">Rain only</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Fertiliser Applied</label>
-        <input id="z-fertiliser" type="text" placeholder="e.g. DAP 50kg/acre + Urea">
+        <label>Last Irrigation Date</label>
+        <input id="z-irrigation" type="date">
       </div>
       <div class="form-group">
-        <label>Pesticide Applied</label>
-        <input id="z-pesticide" type="text" placeholder="e.g. Chlorpyrifos on 15 Jun">
+        <label>Irrigation Frequency</label>
+        <select id="z-irr-freq">
+          <option value="">— Select —</option>
+          <option value="Every 7 days">Every 7 days</option>
+          <option value="Every 10 days">Every 10 days</option>
+          <option value="Every 15 days">Every 15 days</option>
+          <option value="Every 21 days">Every 21 days (3 weeks)</option>
+          <option value="As needed">As needed / on demand</option>
+          <option value="Rain-fed">No irrigation — rain-fed</option>
+        </select>
       </div>
-      <div class="form-group full">
-        <label>Notes</label>
-        <textarea id="z-notes" placeholder="Any other observations about this zone..."></textarea>
-      </div>
-    </div>
 
-    <!-- Custom fields -->
-    <div id="custom-fields"></div>
-    <button id="add-field-btn" onclick="addCustomField()">
-      <span style="font-size:1.1em">+</span> Add custom field
-    </button>
+      <!-- ── Inputs applied ── -->
+      <div class="form-section-label">Inputs Applied</div>
+
+      <div class="form-group">
+        <label>Base Fertiliser (at sowing)</label>
+        <select id="z-fert-base">
+          <option value="">— Select —</option>
+          <option value="DAP 50 kg/acre">DAP 50 kg/acre</option>
+          <option value="DAP 25 kg/acre">DAP 25 kg/acre (half dose)</option>
+          <option value="SSP 100 kg/acre">SSP 100 kg/acre</option>
+          <option value="NPK 12:32:16 50kg/acre">NPK 12:32:16 @ 50 kg/acre</option>
+          <option value="Urea 25 kg/acre">Urea 25 kg/acre</option>
+          <option value="MOP 25 kg/acre">MOP (Potash) 25 kg/acre</option>
+          <option value="Zinc sulphate 10 kg/acre">Zinc sulphate 10 kg/acre</option>
+          <option value="FYM 4 ton/acre">FYM / Compost 4 ton/acre</option>
+          <option value="No basal">No basal fertiliser</option>
+          <option value="Other">Other (fill in notes)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Top Dressing Fertiliser</label>
+        <select id="z-fert-top">
+          <option value="">— Select —</option>
+          <option value="Urea 25 kg/acre at 30 days">Urea 25 kg/acre at 30 days</option>
+          <option value="Urea 50 kg/acre at 30 days">Urea 50 kg/acre at 30 days</option>
+          <option value="NPK 19:19:19 foliar spray">NPK 19:19:19 foliar spray</option>
+          <option value="DAP 2% foliar spray">DAP 2% foliar spray</option>
+          <option value="Boron 0.2% foliar">Boron 0.2% foliar spray</option>
+          <option value="Micronutrient mix foliar">Micronutrient mix foliar</option>
+          <option value="Not applied">Not applied yet</option>
+          <option value="Other">Other (fill in notes)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Herbicide / Weedicide</label>
+        <select id="z-herbicide">
+          <option value="">— Select —</option>
+          <option value="Imazethapyr (Pursuit)">Imazethapyr / Pursuit (Soybean)</option>
+          <option value="Quizalofop (Targa Super)">Quizalofop / Targa Super</option>
+          <option value="Pendimethalin (pre-emergence)">Pendimethalin (pre-emergence)</option>
+          <option value="Atrazine (Maize)">Atrazine (Maize)</option>
+          <option value="2,4-D (Wheat)">2,4-D (Wheat broadleaf)</option>
+          <option value="Clodinafop (Topik Wheat)">Clodinafop / Topik (Wheat narrow)</option>
+          <option value="Manual weeding">Manual weeding only</option>
+          <option value="Not applied">Not applied</option>
+          <option value="Other">Other (fill in notes)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Insecticide / Pesticide</label>
+        <select id="z-pesticide">
+          <option value="">— Select —</option>
+          <option value="Chlorpyrifos 20EC">Chlorpyrifos 20EC</option>
+          <option value="Lambda-cyhalothrin">Lambda-cyhalothrin (Karate)</option>
+          <option value="Imidacloprid (Confidor)">Imidacloprid / Confidor</option>
+          <option value="Profenofos + Cypermethrin">Profenofos + Cypermethrin</option>
+          <option value="Thiamethoxam (Actara)">Thiamethoxam / Actara</option>
+          <option value="Emamectin benzoate">Emamectin benzoate</option>
+          <option value="Neem oil spray">Neem oil spray (organic)</option>
+          <option value="Not applied">Not applied</option>
+          <option value="Other">Other (fill in notes)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Fungicide</label>
+        <select id="z-fungicide">
+          <option value="">— Select —</option>
+          <option value="Mancozeb (Dithane M-45)">Mancozeb / Dithane M-45</option>
+          <option value="Carbendazim + Mancozeb">Carbendazim + Mancozeb</option>
+          <option value="Hexaconazole">Hexaconazole</option>
+          <option value="Propiconazole (Tilt)">Propiconazole / Tilt</option>
+          <option value="Metalaxyl + Mancozeb">Metalaxyl + Mancozeb (Ridomil)</option>
+          <option value="Trifloxystrobin">Trifloxystrobin (Nativo)</option>
+          <option value="Not applied">Not applied</option>
+          <option value="Other">Other (fill in notes)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Previous Season Crop</label>
+        <select id="z-prev-crop">
+          <option value="">— Select —</option>
+          <option value="Soybean">Soybean</option>
+          <option value="Wheat">Wheat</option>
+          <option value="Chickpea">Chickpea</option>
+          <option value="Mustard">Mustard</option>
+          <option value="Maize">Maize</option>
+          <option value="Cotton">Cotton</option>
+          <option value="Fallow">Fallow (khali)</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+
+      <!-- ── Notes ── -->
+      <div class="form-section-label">Notes</div>
+
+      <div class="form-group full">
+        <label>Additional Notes</label>
+        <textarea id="z-notes" placeholder="Any other observations — pest sighting, crop damage, flooding, yield estimate..."></textarea>
+      </div>
+
+    </div>
 
     <div class="form-actions" style="margin-top:14px">
       <button class="btn-cancel" onclick="cancelZone()">Cancel</button>
@@ -478,15 +685,11 @@ let pendingQueue   = [];     // for split: queue of pieces to fill in
 let selected = {{id:'all', type:'all'}};
 let currentMode = 'click';   // 'click' | 'split' | 'view'
 
-// Line draw control (for split mode)
+// Line draw handler (activated programmatically — no toolbar widget shown)
 const drawnItems = new L.FeatureGroup().addTo(map);
-const splitControl = new L.Control.Draw({{
-  draw: {{
-    polyline: {{ shapeOptions:{{ color:'#fdd835', weight:3, dashArray:'8 4' }} }},
-    polygon:false, rectangle:false, circle:false, marker:false, circlemarker:false
-  }},
-  edit: {{ featureGroup: drawnItems, remove:false }}
-}});
+// Add a dummy control so Leaflet.draw can register event types
+new L.Control.Draw({{ draw:{{polyline:false,polygon:false,rectangle:false,circle:false,marker:false,circlemarker:false}}, edit:{{featureGroup:drawnItems}} }}).addTo(map);
+let splitHandler = null;
 
 function zoneColor(z) {{
   if (!z.sowing_date) return '#ab47bc';
@@ -524,6 +727,14 @@ function renderZones() {{
 renderZones();
 
 // ── Mode switching ────────────────────────────────────────────────────────
+function stopSplitHandler() {{
+  if (splitHandler) {{
+    try {{ splitHandler.disable(); }} catch(e) {{}}
+    splitHandler = null;
+  }}
+  drawnItems.clearLayers();
+}}
+
 function setMode(mode) {{
   currentMode = mode;
   const hint = document.getElementById('mode-hint');
@@ -532,22 +743,26 @@ function setMode(mode) {{
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active','split-active'));
 
   if (mode === 'click') {{
+    stopSplitHandler();
     document.getElementById('btn-click-zone').classList.add('active');
     hint.style.display = 'none';
     cancelBtn.style.display = 'none';
-    map.removeControl(splitControl);
     map.getContainer().style.cursor = '';
   }} else if (mode === 'split') {{
     document.getElementById('btn-split').classList.add('split-active');
-    hint.textContent = '✂️ Draw a line across the field to split it — double-click to finish';
+    hint.textContent = '✂️ Click to start drawing — click along the line — double-click to finish';
     hint.style.display = 'block';
     cancelBtn.style.display = 'block';
-    map.addControl(splitControl);
-    map.getContainer().style.cursor = 'crosshair';
+    // Start drawing immediately
+    splitHandler = new L.Draw.Polyline(map, {{
+      shapeOptions: {{ color:'#fdd835', weight:3, dashArray:'8 4' }},
+      showLength: false,
+    }});
+    splitHandler.enable();
   }} else {{
+    stopSplitHandler();
     hint.style.display = 'none';
     cancelBtn.style.display = 'none';
-    map.removeControl(splitControl);
     map.getContainer().style.cursor = '';
   }}
 }}
@@ -604,7 +819,7 @@ function splitPolygonByLine(polygon, lineCoords) {{
 
 map.on(L.Draw.Event.CREATED, e => {{
   const line = e.layer.toGeoJSON();
-  drawnItems.addLayer(e.layer);
+  splitHandler = null; // handler auto-disables after CREATED
 
   let splitDone = false;
   farmLayer.eachLayer(plotLayer => {{
@@ -615,10 +830,7 @@ map.on(L.Draw.Event.CREATED, e => {{
       const pieces = splitPolygonByLine(poly, line.geometry.coordinates);
       if (pieces.length >= 2) {{
         splitDone = true;
-        map.removeControl(splitControl);
         setMode('view');
-        drawnItems.clearLayers();
-
         pendingQueue = pieces.map((f, i) => {{
           const coords = f.geometry.coordinates[0].map(c => [c[0], c[1]]);
           const sqm = calcAreaSqm(coords);
@@ -630,8 +842,10 @@ map.on(L.Draw.Event.CREATED, e => {{
   }});
 
   if (!splitDone) {{
-    drawnItems.clearLayers();
-    alert('Line did not cross any field boundary. Draw the line from one edge to the other edge of the field.');
+    alert('Line did not cross any field boundary. Draw the line from one edge of the field to the other.');
+    // Re-enable drawing so user can try again
+    splitHandler = new L.Draw.Polyline(map, {{ shapeOptions:{{ color:'#fdd835', weight:3, dashArray:'8 4' }}, showLength:false }});
+    splitHandler.enable();
   }}
 }});
 
@@ -643,35 +857,44 @@ function processQueue() {{
 }}
 
 // ── Zone form ─────────────────────────────────────────────────────────────
-let customFieldCount = 0;
-
 function openZoneForm(zoneId, preSqm, preName) {{
   editingZoneId = zoneId;
-  document.getElementById('custom-fields').innerHTML = '';
-  customFieldCount = 0;
 
+  const FIELD_IDS = ['z-name','z-khasra','z-land-type','z-soil','z-crop','z-variety','z-sowing','z-seed-rate','z-seed-treat','z-irr-method','z-water-source','z-irrigation','z-irr-freq','z-fert-base','z-fert-top','z-herbicide','z-pesticide','z-fungicide','z-prev-crop','z-notes'];
   if (zoneId) {{
     const z = zones.find(x => x.id === zoneId);
     document.getElementById('form-title-text').textContent = '✏️ Edit Zone';
-    document.getElementById('z-name').value        = z.name || '';
-    document.getElementById('z-crop').value        = z.crop || '';
-    document.getElementById('z-sowing').value      = z.sowing_date || '';
-    document.getElementById('z-irrigation').value  = z.irrigation_date || '';
-    document.getElementById('z-irr-method').value  = z.irrigation_method || '';
-    document.getElementById('z-soil').value        = z.soil_type || '';
-    document.getElementById('z-fertiliser').value  = z.fertiliser || '';
-    document.getElementById('z-pesticide').value   = z.pesticide || '';
-    document.getElementById('z-notes').value       = z.notes || '';
-    (z.custom_fields || []).forEach(cf => addCustomField(cf.key, cf.value));
+    FIELD_IDS.forEach(id => {{
+      const el = document.getElementById(id); if(el) el.value = '';
+    }});
+    document.getElementById('z-name').value       = z.name || '';
+    document.getElementById('z-khasra').value     = z.khasra || '';
+    document.getElementById('z-land-type').value  = z.land_type || '';
+    document.getElementById('z-soil').value       = z.soil_type || '';
+    document.getElementById('z-crop').value       = z.crop || '';
+    document.getElementById('z-variety').value    = z.variety || '';
+    document.getElementById('z-sowing').value     = z.sowing_date || '';
+    document.getElementById('z-seed-rate').value  = z.seed_rate || '';
+    document.getElementById('z-seed-treat').value = z.seed_treatment || '';
+    document.getElementById('z-irr-method').value = z.irrigation_method || '';
+    document.getElementById('z-water-source').value = z.water_source || '';
+    document.getElementById('z-irrigation').value = z.irrigation_date || '';
+    document.getElementById('z-irr-freq').value   = z.irrigation_freq || '';
+    document.getElementById('z-fert-base').value  = z.fertiliser_base || '';
+    document.getElementById('z-fert-top').value   = z.fertiliser_top || '';
+    document.getElementById('z-herbicide').value  = z.herbicide || '';
+    document.getElementById('z-pesticide').value  = z.pesticide || '';
+    document.getElementById('z-fungicide').value  = z.fungicide || '';
+    document.getElementById('z-prev-crop').value  = z.prev_crop || '';
+    document.getElementById('z-notes').value      = z.notes || '';
   }} else {{
     document.getElementById('form-title-text').textContent = preSqm
       ? `📌 Add Zone — ${{Math.round(preSqm/1333.33*10)/10}} bigha (${{Math.round(preSqm).toLocaleString()}} m²)`
       : '📌 Add Zone';
-    document.getElementById('z-name').value = preName || '';
-    ['z-sowing','z-irrigation','z-irr-method','z-soil','z-fertiliser','z-pesticide','z-notes'].forEach(id => {{
+    FIELD_IDS.forEach(id => {{
       const el = document.getElementById(id); if(el) el.value='';
     }});
-    document.getElementById('z-crop').value = '';
+    document.getElementById('z-name').value = preName || '';
   }}
   document.getElementById('zone-overlay').classList.add('show');
 }}
@@ -684,60 +907,45 @@ function cancelZone() {{
   setMode('click');
 }}
 
-function addCustomField(key='', value='') {{
-  const id = ++customFieldCount;
-  const div = document.createElement('div');
-  div.className = 'custom-field';
-  div.id = 'cf-' + id;
-  div.innerHTML = `
-    <input type="text" placeholder="Field name (e.g. Khasra no.)" value="${{key}}" class="cf-key">
-    <input type="text" placeholder="Value" value="${{value}}" class="cf-val">
-    <button class="cf-remove" onclick="document.getElementById('cf-${{id}}').remove()">✕</button>`;
-  document.getElementById('custom-fields').insertBefore(div, document.getElementById('custom-fields').firstChild);
-  document.getElementById('custom-fields').appendChild(div);
-}}
-
 function saveZone() {{
   const name = document.getElementById('z-name').value.trim();
   if (!name) {{ alert('Please enter a zone name'); return; }}
 
-  const customFields = [];
-  document.querySelectorAll('.custom-field').forEach(row => {{
-    const k = row.querySelector('.cf-key').value.trim();
-    const v = row.querySelector('.cf-val').value.trim();
-    if (k) customFields.push({{key:k, value:v}});
-  }});
+  const zoneData = {{
+    name,
+    khasra:            document.getElementById('z-khasra').value,
+    land_type:         document.getElementById('z-land-type').value,
+    soil_type:         document.getElementById('z-soil').value,
+    crop:              document.getElementById('z-crop').value,
+    variety:           document.getElementById('z-variety').value,
+    sowing_date:       document.getElementById('z-sowing').value,
+    seed_rate:         document.getElementById('z-seed-rate').value,
+    seed_treatment:    document.getElementById('z-seed-treat').value,
+    irrigation_method: document.getElementById('z-irr-method').value,
+    water_source:      document.getElementById('z-water-source').value,
+    irrigation_date:   document.getElementById('z-irrigation').value,
+    irrigation_freq:   document.getElementById('z-irr-freq').value,
+    fertiliser_base:   document.getElementById('z-fert-base').value,
+    fertiliser_top:    document.getElementById('z-fert-top').value,
+    herbicide:         document.getElementById('z-herbicide').value,
+    pesticide:         document.getElementById('z-pesticide').value,
+    fungicide:         document.getElementById('z-fungicide').value,
+    prev_crop:         document.getElementById('z-prev-crop').value,
+    notes:             document.getElementById('z-notes').value,
+  }};
 
   if (editingZoneId) {{
     const z = zones.find(x => x.id === editingZoneId);
-    Object.assign(z, {{
-      name, crop: document.getElementById('z-crop').value,
-      sowing_date: document.getElementById('z-sowing').value,
-      irrigation_date: document.getElementById('z-irrigation').value,
-      irrigation_method: document.getElementById('z-irr-method').value,
-      soil_type: document.getElementById('z-soil').value,
-      fertiliser: document.getElementById('z-fertiliser').value,
-      pesticide: document.getElementById('z-pesticide').value,
-      notes: document.getElementById('z-notes').value,
-      custom_fields: customFields,
-      updated_at: new Date().toISOString(),
-    }});
+    Object.assign(z, zoneData, {{ updated_at: new Date().toISOString() }});
   }} else {{
     const geo = pendingGeojson;
     const coords = geo.coordinates[0].map(c => [c[0],c[1]]);
     const sqm = calcAreaSqm(coords);
     zones.push({{
       id: 'zone_' + Date.now(),
-      name, crop: document.getElementById('z-crop').value,
-      sowing_date: document.getElementById('z-sowing').value,
-      irrigation_date: document.getElementById('z-irrigation').value,
-      irrigation_method: document.getElementById('z-irr-method').value,
-      soil_type: document.getElementById('z-soil').value,
-      fertiliser: document.getElementById('z-fertiliser').value,
-      pesticide: document.getElementById('z-pesticide').value,
-      notes: document.getElementById('z-notes').value,
-      custom_fields: customFields,
-      geojson: geo, area_sqm: Math.round(sqm),
+      ...zoneData,
+      geojson: geo,
+      area_sqm: Math.round(sqm),
       area_bigha: Math.round(sqm / 1333.33 * 10) / 10,
       created_at: new Date().toISOString(),
     }});
@@ -805,6 +1013,11 @@ function selectItem(id, type) {{
   }}
 }}
 
+function kv(label, val) {{
+  if (!val) return '';
+  return `<div class="zone-kv"><span class="zone-k">${{label}}</span><span class="zone-v">${{val}}</span></div>`;
+}}
+
 function showZoneDetail(id) {{
   const z = zones.find(x => x.id === id);
   if (!z) return;
@@ -814,23 +1027,31 @@ function showZoneDetail(id) {{
   const days = z.sowing_date ? Math.floor((Date.now()-new Date(z.sowing_date))/86400000) : null;
   const stage = days===null ? '—' : days<0 ? `Sowing in ${{Math.abs(days)}} days` : days<21 ? `Germination (Day ${{days}})` : days<35 ? `Vegetative (Day ${{days}})` : days<55 ? `Flowering (Day ${{days}})` : days<80 ? `Pod fill (Day ${{days}})` : `Maturity (Day ${{days}})`;
 
-  const irr = z.irrigation_date ? `${{z.irrigation_date}} ${{z.irrigation_method ? '· '+z.irrigation_method : ''}}` : '—';
+  const irrLine = [z.irrigation_date, z.irrigation_method, z.water_source].filter(Boolean).join(' · ') || '—';
 
-  let rows = `
-    <div class="zone-kv"><span class="zone-k">Crop</span><span class="zone-v">${{z.crop||'—'}}</span></div>
-    <div class="zone-kv"><span class="zone-k">Area</span><span class="zone-v">${{z.area_bigha||'?'}} bigha (${{(z.area_sqm||0).toLocaleString()}} m²)</span></div>
-    <div class="zone-kv"><span class="zone-k">Sowing date</span><span class="zone-v">${{z.sowing_date||'—'}}</span></div>
-    <div class="zone-kv"><span class="zone-k">Growth stage</span><span class="zone-v">${{stage}}</span></div>
-    <div class="zone-kv"><span class="zone-k">Last irrigation</span><span class="zone-v"><span class="irr-badge">💧 ${{irr}}</span></span></div>
-    <div class="zone-kv"><span class="zone-k">Soil type</span><span class="zone-v">${{z.soil_type||'—'}}</span></div>
-    <div class="zone-kv"><span class="zone-k">Fertiliser</span><span class="zone-v">${{z.fertiliser||'—'}}</span></div>
-    <div class="zone-kv"><span class="zone-k">Pesticide</span><span class="zone-v">${{z.pesticide||'—'}}</span></div>`;
-
-  (z.custom_fields||[]).forEach(cf => {{
-    rows += `<div class="zone-kv"><span class="zone-k">${{cf.key}}</span><span class="zone-v">${{cf.value}}</span></div>`;
-  }});
-
-  if (z.notes) rows += `<div class="zone-kv"><span class="zone-k">Notes</span><span class="zone-v" style="font-weight:400;color:#c0c8e0">${{z.notes}}</span></div>`;
+  const rows =
+    kv('Area',             `${{z.area_bigha||'?'}} bigha (${{(z.area_sqm||0).toLocaleString()}} m²)`) +
+    kv('Khasra / Survey',  z.khasra) +
+    kv('Land type',        z.land_type) +
+    kv('Soil type',        z.soil_type) +
+    `<div style="height:4px"></div>` +
+    kv('Crop',             z.crop) +
+    kv('Variety',          z.variety) +
+    kv('Sowing date',      z.sowing_date) +
+    kv('Growth stage',     stage) +
+    kv('Seed rate',        z.seed_rate) +
+    kv('Seed treatment',   z.seed_treatment) +
+    `<div style="height:4px"></div>` +
+    `<div class="zone-kv"><span class="zone-k">Last irrigation</span><span class="zone-v"><span class="irr-badge">💧 ${{irrLine}}</span></span></div>` +
+    kv('Irrigation freq',  z.irrigation_freq) +
+    `<div style="height:4px"></div>` +
+    kv('Base fertiliser',  z.fertiliser_base) +
+    kv('Top dressing',     z.fertiliser_top) +
+    kv('Herbicide',        z.herbicide) +
+    kv('Pesticide',        z.pesticide) +
+    kv('Fungicide',        z.fungicide) +
+    kv('Previous crop',    z.prev_crop) +
+    (z.notes ? `<div class="zone-kv"><span class="zone-k">Notes</span><span class="zone-v" style="font-weight:400;color:#c0c8e0">${{z.notes}}</span></div>` : '');
 
   el.innerHTML = `
     <div class="zone-detail-title">
@@ -841,7 +1062,6 @@ function showZoneDetail(id) {{
     <button class="btn-edit-zone" onclick="openZoneForm('${{z.id}}')">✏️ Edit</button>
     <button class="btn-delete-zone" onclick="deleteZone('${{z.id}}')">🗑 Delete</button>`;
 
-  // Scroll sidebar to top so detail is visible
   document.getElementById('sb-body').scrollTop = 0;
 }}
 </script>
