@@ -166,11 +166,8 @@ def build_html(farm: dict, stats: dict) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>{name} — Agri Monitor</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
-<style>.leaflet-draw-toolbar,.leaflet-draw-section{{display:none!important}}</style>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 html,body{{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e8eaf0;font-size:14px}}
@@ -270,9 +267,9 @@ textarea{{resize:vertical;min-height:60px}}
 <div id="app">
   <div id="map">
     <div id="map-toolbar">
-      <button id="btn-click-zone" class="tb-btn active" onclick="setMode('click')" title="Click plot to add zone">👆 Click to Add Zone</button>
-      <button id="btn-split" class="tb-btn" onclick="setMode('split')" title="Draw a line to split a plot">✂️ Split Field</button>
-      <button id="btn-cancel-mode" class="tb-btn cancel" onclick="setMode('view')" style="display:none">✕ Cancel</button>
+      <button id="btn-click-zone" class="tb-btn active" onclick="setMode('click')" title="Click anywhere on a plot to zone the whole plot">👆 Select Plot</button>
+      <button id="btn-grid" class="tb-btn" onclick="setMode('grid')" title="Show grid cells — click a cell to zone it">⊞ Grid Zones</button>
+      <button id="btn-cancel-mode" class="tb-btn cancel" onclick="setMode('click')" style="display:none">✕ Exit Grid</button>
     </div>
     <div id="mode-hint"></div>
   </div>
@@ -680,16 +677,10 @@ const STORAGE_KEY = 'agri_zones_{farm.get("id","farm")}';
 let zones = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
 let zoneLayers = {{}};
 let editingZoneId = null;
-let pendingGeojson = null;   // geojson waiting for the form
-let pendingQueue   = [];     // for split: queue of pieces to fill in
+let pendingGeojson = null;
 let selected = {{id:'all', type:'all'}};
-let currentMode = 'click';   // 'click' | 'split' | 'view'
-
-// Line draw handler (activated programmatically — no toolbar widget shown)
-const drawnItems = new L.FeatureGroup().addTo(map);
-// Add a dummy control so Leaflet.draw can register event types
-new L.Control.Draw({{ draw:{{polyline:false,polygon:false,rectangle:false,circle:false,marker:false,circlemarker:false}}, edit:{{featureGroup:drawnItems}} }}).addTo(map);
-let splitHandler = null;
+let currentMode = 'click';   // 'click' | 'grid'
+let gridLayer = null;         // L.LayerGroup holding current grid cells
 
 function zoneColor(z) {{
   if (!z.sowing_date) return '#ab47bc';
@@ -705,7 +696,6 @@ function renderZones() {{
   Object.values(zoneLayers).forEach(l => map.removeLayer(l));
   zoneLayers = {{}};
   document.getElementById('zone-pills').innerHTML = '';
-
   zones.forEach(z => {{
     const color = zoneColor(z);
     const layer = L.geoJSON(z.geojson, {{
@@ -715,10 +705,8 @@ function renderZones() {{
     layer.on('mouseover', () => layer.setStyle({{ fillOpacity:0.6, weight:3 }}));
     layer.on('mouseout',  () => {{ if(selected.id!==z.id) layer.setStyle({{ fillOpacity:0.38, weight:2.5 }}); }});
     zoneLayers[z.id] = layer;
-
     const pill = document.createElement('button');
-    pill.className = 'pill zone-pill';
-    pill.id = 'pill-' + z.id;
+    pill.className = 'pill zone-pill'; pill.id = 'pill-' + z.id;
     pill.textContent = z.name;
     pill.onclick = () => selectItem(z.id, 'zone');
     document.getElementById('zone-pills').appendChild(pill);
@@ -726,135 +714,99 @@ function renderZones() {{
 }}
 renderZones();
 
-// ── Mode switching ────────────────────────────────────────────────────────
-function stopSplitHandler() {{
-  if (splitHandler) {{
-    try {{ splitHandler.disable(); }} catch(e) {{}}
-    splitHandler = null;
-  }}
-  drawnItems.clearLayers();
+// ── Grid overlay ─────────────────────────────────────────────────────────
+// Cell size in degrees at each zoom level (roughly 50–80m wide cells on screen)
+const GRID_DEG = {{
+  14: 0.003, 15: 0.0015, 16: 0.0008, 17: 0.0004,
+  18: 0.0002, 19: 0.0001, 20: 0.00005, 21: 0.000025,
+}};
+
+function buildGrid() {{
+  if (gridLayer) {{ map.removeLayer(gridLayer); gridLayer = null; }}
+  const z = map.getZoom();
+  const step = GRID_DEG[Math.round(z)] || GRID_DEG[Math.max(14, Math.min(21, Math.round(z)))] || 0.001;
+
+  gridLayer = L.layerGroup().addTo(map);
+
+  farmData.features.forEach(feat => {{
+    const poly = turf.polygon(feat.geometry.coordinates);
+    const bb = turf.bbox(poly);                    // [minLng, minLat, maxLng, maxLat]
+    const plotName = feat.properties.name;
+
+    // Snap grid origin to step multiples so cells are stable across pans
+    const x0 = Math.floor(bb[0] / step) * step;
+    const y0 = Math.floor(bb[1] / step) * step;
+
+    for (let x = x0; x < bb[2]; x += step) {{
+      for (let y = y0; y < bb[3]; y += step) {{
+        const cell = turf.polygon([[
+          [x,      y],
+          [x+step, y],
+          [x+step, y+step],
+          [x,      y+step],
+          [x,      y],
+        ]]);
+        const clipped = turf.intersect(poly, cell);
+        if (!clipped) continue;
+
+        // Only keep cells with meaningful area (> 2% of a full cell)
+        const cellSqm = step * step * 111000 * 111000 * Math.cos(y * Math.PI / 180);
+        const clippedSqm = calcAreaSqm(clipped.geometry.coordinates[0]);
+        if (clippedSqm < cellSqm * 0.02) continue;
+
+        const lyr = L.geoJSON(clipped, {{
+          style: {{ color:'#fdd835', weight:1, fillColor:'#fdd835', fillOpacity:0.08, dashArray:'3 3' }},
+        }}).addTo(gridLayer);
+
+        lyr.on('mouseover', () => lyr.setStyle({{ fillOpacity:0.3, weight:2 }}));
+        lyr.on('mouseout',  () => lyr.setStyle({{ fillOpacity:0.08, weight:1 }}));
+        lyr.on('click', e => {{
+          L.DomEvent.stopPropagation(e);
+          pendingGeojson = clipped.geometry;
+          const sqm = clippedSqm;
+          const cx = (x + x + step) / 2, cy = (y + y + step) / 2;
+          openZoneForm(null, sqm, plotName + ' — cell');
+        }});
+      }}
+    }}
+  }});
 }}
 
+// Rebuild grid when zoom changes (cell size changes)
+map.on('zoomend', () => {{ if (currentMode === 'grid') buildGrid(); }});
+
+// ── Mode switching ────────────────────────────────────────────────────────
 function setMode(mode) {{
   currentMode = mode;
   const hint = document.getElementById('mode-hint');
   const cancelBtn = document.getElementById('btn-cancel-mode');
-
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active','split-active'));
 
-  if (mode === 'click') {{
-    stopSplitHandler();
+  if (mode === 'grid') {{
+    document.getElementById('btn-grid').classList.add('split-active');
+    hint.textContent = '⊞ Click any yellow cell to zone it — zoom in for smaller cells';
+    hint.style.display = 'block';
+    cancelBtn.style.display = 'block';
+    buildGrid();
+  }} else {{
+    if (gridLayer) {{ map.removeLayer(gridLayer); gridLayer = null; }}
     document.getElementById('btn-click-zone').classList.add('active');
     hint.style.display = 'none';
     cancelBtn.style.display = 'none';
-    map.getContainer().style.cursor = '';
-  }} else if (mode === 'split') {{
-    document.getElementById('btn-split').classList.add('split-active');
-    hint.textContent = '✂️ Click to start drawing — click along the line — double-click to finish';
-    hint.style.display = 'block';
-    cancelBtn.style.display = 'block';
-    // Start drawing immediately
-    splitHandler = new L.Draw.Polyline(map, {{
-      shapeOptions: {{ color:'#fdd835', weight:3, dashArray:'8 4' }},
-      showLength: false,
-    }});
-    splitHandler.enable();
-  }} else {{
-    stopSplitHandler();
-    hint.style.display = 'none';
-    cancelBtn.style.display = 'none';
-    map.getContainer().style.cursor = '';
   }}
 }}
 
-// ── Click on farm plot → open form with area pre-filled ───────────────────
+// ── Click on farm plot (select-plot mode) → zone whole plot ───────────────
 farmLayer.eachLayer(layer => {{
   layer.on('click', e => {{
     if (currentMode !== 'click') return;
     L.DomEvent.stopPropagation(e);
     const f = layer.feature;
-    // Use the plot polygon as the zone geometry
     pendingGeojson = f.geometry;
     const coords = f.geometry.coordinates[0].map(c=>[c[0],c[1]]);
-    const sqm = calcAreaSqm(coords);
-    openZoneForm(null, sqm, f.properties.name);
+    openZoneForm(null, calcAreaSqm(coords), f.properties.name);
   }});
 }});
-
-// ── Split line drawn ──────────────────────────────────────────────────────
-// Uses half-plane intersect: extend line beyond polygon, build two rectangles
-// on each side of the line, intersect each with the plot polygon.
-function splitPolygonByLine(polygon, lineCoords) {{
-  const spread = 0.05; // ~5 km in degrees — well beyond any farm
-  const p1 = lineCoords[0];
-  const p2 = lineCoords[lineCoords.length - 1];
-  const dx = p2[0] - p1[0], dy = p2[1] - p1[1];
-  const len = Math.sqrt(dx*dx + dy*dy) || 1e-9;
-  const ux = dx/len, uy = dy/len;   // unit along line
-  const nx = -uy,    ny = ux;        // unit normal (perpendicular)
-  const mx = (p1[0]+p2[0])/2, my = (p1[1]+p2[1])/2;
-
-  // Extended line endpoints
-  const a1 = [mx - ux*spread, my - uy*spread];
-  const a2 = [mx + ux*spread, my + uy*spread];
-
-  // Two rectangles, one on each side of the line
-  const half1 = turf.polygon([[
-    [a1[0] + nx*spread, a1[1] + ny*spread],
-    [a2[0] + nx*spread, a2[1] + ny*spread],
-    a2, a1,
-    [a1[0] + nx*spread, a1[1] + ny*spread],
-  ]]);
-  const half2 = turf.polygon([[
-    [a1[0] - nx*spread, a1[1] - ny*spread],
-    [a2[0] - nx*spread, a2[1] - ny*spread],
-    a2, a1,
-    [a1[0] - nx*spread, a1[1] - ny*spread],
-  ]]);
-
-  const piece1 = turf.intersect(polygon, half1);
-  const piece2 = turf.intersect(polygon, half2);
-  return [piece1, piece2].filter(p => p !== null);
-}}
-
-map.on(L.Draw.Event.CREATED, e => {{
-  const line = e.layer.toGeoJSON();
-  splitHandler = null; // handler auto-disables after CREATED
-
-  let splitDone = false;
-  farmLayer.eachLayer(plotLayer => {{
-    if (splitDone) return;
-    const plotGeo = plotLayer.feature.geometry;
-    try {{
-      const poly = turf.polygon(plotGeo.coordinates);
-      const pieces = splitPolygonByLine(poly, line.geometry.coordinates);
-      if (pieces.length >= 2) {{
-        splitDone = true;
-        setMode('view');
-        pendingQueue = pieces.map((f, i) => {{
-          const coords = f.geometry.coordinates[0].map(c => [c[0], c[1]]);
-          const sqm = calcAreaSqm(coords);
-          return {{ geojson: f.geometry, sqm, name: plotLayer.feature.properties.name + ' Part ' + (i+1) }};
-        }});
-        processQueue();
-      }}
-    }} catch(err) {{ console.error('split error', err); }}
-  }});
-
-  if (!splitDone) {{
-    alert('Line did not cross any field boundary. Draw the line from one edge of the field to the other.');
-    // Re-enable drawing so user can try again
-    splitHandler = new L.Draw.Polyline(map, {{ shapeOptions:{{ color:'#fdd835', weight:3, dashArray:'8 4' }}, showLength:false }});
-    splitHandler.enable();
-  }}
-}});
-
-function processQueue() {{
-  if (pendingQueue.length === 0) return;
-  const next = pendingQueue.shift();
-  pendingGeojson = next.geojson;
-  openZoneForm(null, next.sqm, next.name);
-}}
 
 // ── Zone form ─────────────────────────────────────────────────────────────
 function openZoneForm(zoneId, preSqm, preName) {{
