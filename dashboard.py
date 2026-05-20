@@ -715,36 +715,35 @@ function renderZones() {{
 renderZones();
 
 // ── Grid overlay ─────────────────────────────────────────────────────────
-// Cell size in degrees per zoom level — each step ~80-150m wide on screen
-const GRID_DEG = {{14:0.003,15:0.0015,16:0.0008,17:0.0004,18:0.0002,19:0.0001,20:0.00005,21:0.000025}};
+// Divisions along the shorter axis of each plot's bounding box, per zoom.
+// Cells are always proportional to the field — never a fixed degree size.
+const DIVISIONS = {{14:2,15:3,16:4,17:6,18:9,19:13,20:18,21:25}};
 
 function buildGrid() {{
   if (gridLayer) {{ map.removeLayer(gridLayer); gridLayer = null; }}
   const z = Math.min(21, Math.max(14, Math.round(map.getZoom())));
-  const step = GRID_DEG[z];
+  const divs = DIVISIONS[z];
   gridLayer = L.layerGroup().addTo(map);
 
   farmData.features.forEach(feat => {{
     const ring = feat.geometry.coordinates[0];
-    // GeoJSON rings must be closed for turf — add first point at end if missing
     const closed = (ring[0][0]===ring[ring.length-1][0] && ring[0][1]===ring[ring.length-1][1])
       ? ring : [...ring, ring[0]];
     const poly = turf.polygon([closed]);
     const bb = turf.bbox(poly);   // [minLng, minLat, maxLng, maxLat]
     const plotName = feat.properties.name;
 
-    // Snap origin so grid is stable while panning
-    const x0 = Math.floor(bb[0] / step) * step;
-    const y0 = Math.floor(bb[1] / step) * step;
+    const W = bb[2] - bb[0];   // bbox width  in degrees
+    const H = bb[3] - bb[1];   // bbox height in degrees
+    // Step size = shorter side / divs  (cells are square-ish, proportional to field)
+    const step = Math.min(W, H) / divs;
 
-    for (let x = x0; x < bb[2] + step; x += step) {{
-      for (let y = y0; y < bb[3] + step; y += step) {{
+    for (let x = bb[0]; x < bb[2]; x += step) {{
+      for (let y = bb[1]; y < bb[3]; y += step) {{
         const cx = x + step / 2, cy = y + step / 2;
-        // Only draw cells whose centre is inside the plot polygon
         if (!turf.booleanPointInPolygon(turf.point([cx, cy]), poly)) continue;
 
         const sqm = calcAreaSqm([[x,y],[x+step,y],[x+step,y+step],[x,y+step]]);
-        // L.rectangle takes [[lat,lng],[lat,lng]] (Leaflet is lat/lng order)
         const rect = L.rectangle([[y, x],[y+step, x+step]], {{
           color:'#fdd835', weight:1.5, fillColor:'#fdd835',
           fillOpacity:0.15, dashArray:'4 3',
@@ -754,11 +753,10 @@ function buildGrid() {{
         rect.on('mouseout',  () => rect.setStyle({{fillOpacity:0.15, weight:1.5, color:'#fdd835'}}));
         rect.on('click', e => {{
           L.DomEvent.stopPropagation(e);
-          const cellGeo = {{
-            type: 'Polygon',
-            coordinates: [[[x,y],[x+step,y],[x+step,y+step],[x,y+step],[x,y]]],
+          pendingGeojson = {{
+            type:'Polygon',
+            coordinates:[[[x,y],[x+step,y],[x+step,y+step],[x,y+step],[x,y]]],
           }};
-          pendingGeojson = cellGeo;
           openZoneForm(null, sqm, plotName + ' zone');
         }});
       }}
@@ -766,7 +764,6 @@ function buildGrid() {{
   }});
 }}
 
-// Rebuild grid on zoom so cell sizes stay sensible
 map.on('zoomend', () => {{ if (currentMode === 'grid') buildGrid(); }});
 
 // ── Mode switching ────────────────────────────────────────────────────────
