@@ -268,10 +268,11 @@ textarea{{resize:vertical;min-height:60px}}
   <div id="map">
     <div id="map-toolbar">
       <button id="btn-click-zone" class="tb-btn active" onclick="setMode('click')" title="Click anywhere on a plot to zone the whole plot">👆 Select Plot</button>
-      <button id="btn-grid" class="tb-btn" onclick="setMode('grid')" title="Show grid cells — click a cell to zone it">⊞ Grid Zones</button>
+      <button id="btn-grid" class="tb-btn" onclick="setMode('grid')" title="Show grid cells — click cells to select, then confirm">⊞ Grid Zones</button>
       <button id="btn-cancel-mode" class="tb-btn cancel" onclick="setMode('click')" style="display:none">✕ Exit Grid</button>
     </div>
     <div id="mode-hint"></div>
+    <div id="grid-confirm-btn" onclick="confirmGridSelection()" style="display:none;position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:1000;background:#ff9800;color:#0f1117;padding:10px 28px;border-radius:28px;font-size:0.88em;font-weight:700;cursor:pointer;box-shadow:0 2px 16px #0009;white-space:nowrap;border:none"></div>
   </div>
 
   <!-- Zone form overlay (shown over map) -->
@@ -715,12 +716,54 @@ function renderZones() {{
 renderZones();
 
 // ── Grid overlay ─────────────────────────────────────────────────────────
-// Divisions along the shorter axis of each plot's bounding box, per zoom.
-// Cells are always proportional to the field — never a fixed degree size.
 const DIVISIONS = {{14:2,15:3,16:4,17:6,18:9,19:13,20:18,21:25}};
+let selectedCells = [];   // {{rect, geo, sqm, plotName}}
+
+function updateConfirmBtn() {{
+  const btn = document.getElementById('grid-confirm-btn');
+  if (selectedCells.length === 0) {{
+    btn.style.display = 'none';
+    return;
+  }}
+  const totalSqm = selectedCells.reduce((s, c) => s + c.sqm, 0);
+  const bigha = (totalSqm / 1333.33).toFixed(1);
+  btn.textContent = `✔ Zone ${{selectedCells.length}} cell${{selectedCells.length>1?'s':''}} — ${{bigha}} bigha`;
+  btn.style.display = 'block';
+}}
+
+function confirmGridSelection() {{
+  if (!selectedCells.length) return;
+  const totalSqm = selectedCells.reduce((s, c) => s + c.sqm, 0);
+  const plotName = selectedCells[0].plotName;
+
+  // Try to union all cells into one polygon; fall back to MultiPolygon
+  let geo;
+  try {{
+    let merged = turf.polygon(selectedCells[0].geo.coordinates);
+    for (let i = 1; i < selectedCells.length; i++) {{
+      merged = turf.union(merged, turf.polygon(selectedCells[i].geo.coordinates));
+    }}
+    geo = merged.geometry;
+  }} catch(e) {{
+    geo = {{
+      type: 'MultiPolygon',
+      coordinates: selectedCells.map(c => c.geo.coordinates),
+    }};
+  }}
+
+  pendingGeojson = geo;
+  openZoneForm(null, totalSqm, plotName + ' zone');
+}}
+
+function clearGridSelection() {{
+  selectedCells.forEach(c => c.rect.setStyle({{fillOpacity:0.15, weight:1.5, color:'#fdd835'}}));
+  selectedCells = [];
+  updateConfirmBtn();
+}}
 
 function buildGrid() {{
   if (gridLayer) {{ map.removeLayer(gridLayer); gridLayer = null; }}
+  clearGridSelection();
   const z = Math.min(21, Math.max(14, Math.round(map.getZoom())));
   const divs = DIVISIONS[z];
   gridLayer = L.layerGroup().addTo(map);
@@ -730,34 +773,41 @@ function buildGrid() {{
     const closed = (ring[0][0]===ring[ring.length-1][0] && ring[0][1]===ring[ring.length-1][1])
       ? ring : [...ring, ring[0]];
     const poly = turf.polygon([closed]);
-    const bb = turf.bbox(poly);   // [minLng, minLat, maxLng, maxLat]
+    const bb = turf.bbox(poly);
     const plotName = feat.properties.name;
-
-    const W = bb[2] - bb[0];   // bbox width  in degrees
-    const H = bb[3] - bb[1];   // bbox height in degrees
-    // Step size = shorter side / divs  (cells are square-ish, proportional to field)
-    const step = Math.min(W, H) / divs;
+    const step = Math.min(bb[2]-bb[0], bb[3]-bb[1]) / divs;
 
     for (let x = bb[0]; x < bb[2]; x += step) {{
       for (let y = bb[1]; y < bb[3]; y += step) {{
-        const cx = x + step / 2, cy = y + step / 2;
-        if (!turf.booleanPointInPolygon(turf.point([cx, cy]), poly)) continue;
+        if (!turf.booleanPointInPolygon(turf.point([x+step/2, y+step/2]), poly)) continue;
 
         const sqm = calcAreaSqm([[x,y],[x+step,y],[x+step,y+step],[x,y+step]]);
-        const rect = L.rectangle([[y, x],[y+step, x+step]], {{
-          color:'#fdd835', weight:1.5, fillColor:'#fdd835',
-          fillOpacity:0.15, dashArray:'4 3',
+        const geo = {{type:'Polygon',coordinates:[[[x,y],[x+step,y],[x+step,y+step],[x,y+step],[x,y]]]}};
+        const rect = L.rectangle([[y,x],[y+step,x+step]], {{
+          color:'#fdd835', weight:1.5, fillColor:'#fdd835', fillOpacity:0.15, dashArray:'4 3',
         }}).addTo(gridLayer);
 
-        rect.on('mouseover', () => rect.setStyle({{fillOpacity:0.45, weight:2.5, color:'#fff'}}));
-        rect.on('mouseout',  () => rect.setStyle({{fillOpacity:0.15, weight:1.5, color:'#fdd835'}}));
+        const cellObj = {{rect, geo, sqm, plotName}};
+
+        rect.on('mouseover', () => {{
+          if (!selectedCells.includes(cellObj))
+            rect.setStyle({{fillOpacity:0.35, weight:2, color:'#fff'}});
+        }});
+        rect.on('mouseout', () => {{
+          if (!selectedCells.includes(cellObj))
+            rect.setStyle({{fillOpacity:0.15, weight:1.5, color:'#fdd835'}});
+        }});
         rect.on('click', e => {{
           L.DomEvent.stopPropagation(e);
-          pendingGeojson = {{
-            type:'Polygon',
-            coordinates:[[[x,y],[x+step,y],[x+step,y+step],[x,y+step],[x,y]]],
-          }};
-          openZoneForm(null, sqm, plotName + ' zone');
+          const idx = selectedCells.indexOf(cellObj);
+          if (idx === -1) {{
+            selectedCells.push(cellObj);
+            rect.setStyle({{fillColor:'#ff9800', fillOpacity:0.6, color:'#ff9800', weight:2.5}});
+          }} else {{
+            selectedCells.splice(idx, 1);
+            rect.setStyle({{fillOpacity:0.15, weight:1.5, color:'#fdd835', fillColor:'#fdd835'}});
+          }}
+          updateConfirmBtn();
         }});
       }}
     }}
@@ -775,12 +825,13 @@ function setMode(mode) {{
 
   if (mode === 'grid') {{
     document.getElementById('btn-grid').classList.add('split-active');
-    hint.textContent = '⊞ Click any yellow cell to zone it — zoom in for smaller cells';
+    hint.textContent = '⊞ Click cells to select (orange = selected) — select multiple, then tap the confirm button';
     hint.style.display = 'block';
     cancelBtn.style.display = 'block';
     buildGrid();
   }} else {{
     if (gridLayer) {{ map.removeLayer(gridLayer); gridLayer = null; }}
+    clearGridSelection();
     document.getElementById('btn-click-zone').classList.add('active');
     hint.style.display = 'none';
     cancelBtn.style.display = 'none';
@@ -845,8 +896,8 @@ function openZoneForm(zoneId, preSqm, preName) {{
 function cancelZone() {{
   document.getElementById('zone-overlay').classList.remove('show');
   pendingGeojson = null;
-  pendingQueue = [];
   editingZoneId = null;
+  clearGridSelection();
   setMode('click');
 }}
 
