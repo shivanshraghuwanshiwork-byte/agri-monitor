@@ -267,11 +267,14 @@ textarea{{resize:vertical;min-height:60px}}
 <div id="app">
   <div id="map">
     <div id="map-toolbar">
-      <button id="btn-click-zone" class="tb-btn active" onclick="setMode('click')" title="Click anywhere on a plot to zone the whole plot">👆 Select Plot</button>
-      <button id="btn-grid" class="tb-btn" onclick="setMode('grid')" title="Show grid cells — click cells to select, then confirm">⊞ Grid Zones</button>
-      <button id="btn-cancel-mode" class="tb-btn cancel" onclick="setMode('click')" style="display:none">✕ Exit Grid</button>
+      <button id="btn-click-zone" class="tb-btn active" onclick="setMode('click')">👆 Select Plot</button>
+      <button id="btn-draw" class="tb-btn" onclick="setMode('draw')">✏️ Draw Zone</button>
+      <button id="btn-grid" class="tb-btn" onclick="setMode('grid')">⊞ Grid Zones</button>
+      <button id="btn-cancel-mode" class="tb-btn cancel" onclick="setMode('click')" style="display:none">✕ Cancel</button>
     </div>
     <div id="mode-hint"></div>
+    <div id="draw-undo-btn" onclick="drawUndo()" style="display:none;position:absolute;bottom:72px;left:50%;transform:translateX(-50%);z-index:1000;background:#1a1d2eee;color:#e8eaf0;padding:7px 20px;border-radius:20px;font-size:0.8em;font-weight:600;cursor:pointer;box-shadow:0 2px 12px #0009;border:1px solid #3a3d4a;white-space:nowrap">↩ Undo last point</div>
+    <div id="draw-confirm-btn" onclick="drawFinish()" style="display:none;position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:1000;background:#4fc3f7;color:#0f1117;padding:10px 28px;border-radius:28px;font-size:0.88em;font-weight:700;cursor:pointer;box-shadow:0 2px 16px #0009;white-space:nowrap;border:none"></div>
     <div id="grid-confirm-btn" onclick="confirmGridSelection()" style="display:none;position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:1000;background:#ff9800;color:#0f1117;padding:10px 28px;border-radius:28px;font-size:0.88em;font-weight:700;cursor:pointer;box-shadow:0 2px 16px #0009;white-space:nowrap;border:none"></div>
   </div>
 
@@ -842,6 +845,122 @@ function buildGrid() {{
 
 map.on('zoomend', () => {{ if (currentMode === 'grid') buildGrid(); }});
 
+// ── Draw Zone mode ────────────────────────────────────────────────────────
+// Click to add points, double-click or click near start to close polygon.
+let drawPoints  = [];   // [[lng,lat], ...]
+let drawPolyline = null;
+let drawPolygon  = null;
+let drawMarkers  = [];
+
+const CLOSE_PX = 20;   // pixels — snap to first point within this distance
+
+function drawReset() {{
+  drawPoints = [];
+  drawMarkers.forEach(m => map.removeLayer(m));
+  drawMarkers = [];
+  if (drawPolyline) {{ map.removeLayer(drawPolyline); drawPolyline = null; }}
+  if (drawPolygon)  {{ map.removeLayer(drawPolygon);  drawPolygon  = null; }}
+  document.getElementById('draw-confirm-btn').style.display = 'none';
+  document.getElementById('draw-undo-btn').style.display = 'none';
+}}
+
+function drawUpdatePreview() {{
+  if (drawPolyline) map.removeLayer(drawPolyline);
+  if (drawPolygon)  map.removeLayer(drawPolygon);
+
+  if (drawPoints.length < 2) {{
+    drawPolyline = null; drawPolygon = null; return;
+  }}
+
+  // Closed preview polygon when ≥3 points
+  if (drawPoints.length >= 3) {{
+    drawPolygon = L.polygon(drawPoints.map(p=>[p[1],p[0]]), {{
+      color:'#4fc3f7', weight:2, fillColor:'#4fc3f7', fillOpacity:0.2, dashArray:'6 3',
+    }}).addTo(map);
+  }}
+  // Live edge to show the boundary
+  const allPts = [...drawPoints, drawPoints[0]];
+  drawPolyline = L.polyline(allPts.map(p=>[p[1],p[0]]), {{
+    color:'#4fc3f7', weight:2, dashArray:'6 3',
+  }}).addTo(map);
+}}
+
+function drawAddPoint(latlng) {{
+  const pt = [latlng.lng, latlng.lat];
+
+  // Snap-close: if ≥3 points and click is within CLOSE_PX of first point
+  if (drawPoints.length >= 3) {{
+    const firstPx = map.latLngToContainerPoint(L.latLng(drawPoints[0][1], drawPoints[0][0]));
+    const clickPx = map.latLngToContainerPoint(latlng);
+    const dist = Math.hypot(firstPx.x - clickPx.x, firstPx.y - clickPx.y);
+    if (dist <= CLOSE_PX) {{ drawFinish(); return; }}
+  }}
+
+  drawPoints.push(pt);
+
+  // Marker for the point — first point gets a special "close here" ring
+  const isFirst = drawPoints.length === 1;
+  const marker = L.circleMarker([latlng.lat, latlng.lng], {{
+    radius: isFirst ? 7 : 4,
+    color: isFirst ? '#fff' : '#4fc3f7',
+    fillColor: isFirst ? '#4fc3f7' : '#fff',
+    fillOpacity: 1, weight: 2,
+  }}).addTo(map);
+  drawMarkers.push(marker);
+
+  drawUpdatePreview();
+
+  const confirmBtn = document.getElementById('draw-confirm-btn');
+  const undoBtn    = document.getElementById('draw-undo-btn');
+  undoBtn.style.display = 'block';
+
+  if (drawPoints.length >= 3) {{
+    const sqm = calcAreaSqm(drawPoints);
+    confirmBtn.textContent = `✔ Close polygon — ${{(sqm/1333.33).toFixed(1)}} bigha`;
+    confirmBtn.style.display = 'block';
+  }} else {{
+    confirmBtn.style.display = 'none';
+  }}
+}}
+
+function drawUndo() {{
+  if (!drawPoints.length) return;
+  drawPoints.pop();
+  const m = drawMarkers.pop();
+  if (m) map.removeLayer(m);
+  drawUpdatePreview();
+  const confirmBtn = document.getElementById('draw-confirm-btn');
+  const undoBtn    = document.getElementById('draw-undo-btn');
+  if (drawPoints.length < 3) confirmBtn.style.display = 'none';
+  if (drawPoints.length === 0) undoBtn.style.display = 'none';
+  if (drawPoints.length >= 3) {{
+    const sqm = calcAreaSqm(drawPoints);
+    confirmBtn.textContent = `✔ Close polygon — ${{(sqm/1333.33).toFixed(1)}} bigha`;
+  }}
+}}
+
+function drawFinish() {{
+  if (drawPoints.length < 3) return;
+  const closed = [...drawPoints, drawPoints[0]];
+  const sqm = calcAreaSqm(drawPoints);
+  pendingGeojson = {{ type:'Polygon', coordinates:[closed] }};
+  drawReset();
+  setMode('click');
+  openZoneForm(null, sqm, 'My Zone');
+}}
+
+// Map click → add point (draw mode only)
+map.on('click', e => {{
+  if (currentMode === 'draw') drawAddPoint(e.latlng);
+}});
+// Double-click → close polygon
+map.on('dblclick', e => {{
+  if (currentMode === 'draw' && drawPoints.length >= 3) {{
+    L.DomEvent.stopPropagation(e);
+    drawFinish();
+  }}
+}});
+
 // ── Mode switching ────────────────────────────────────────────────────────
 function setMode(mode) {{
   currentMode = mode;
@@ -849,18 +968,31 @@ function setMode(mode) {{
   const cancelBtn = document.getElementById('btn-cancel-mode');
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active','split-active'));
 
-  if (mode === 'grid') {{
-    document.getElementById('btn-grid').classList.add('split-active');
-    hint.textContent = '⊞ Click cells to select (orange = selected) — select multiple, then tap the confirm button';
-    hint.style.display = 'block';
-    cancelBtn.style.display = 'block';
-    buildGrid();
-  }} else {{
+  // Always clean up previous modes
+  if (mode !== 'draw') drawReset();
+  if (mode !== 'grid') {{
     if (gridLayer) {{ map.removeLayer(gridLayer); gridLayer = null; }}
     clearGridSelection();
+  }}
+
+  if (mode === 'draw') {{
+    document.getElementById('btn-draw').classList.add('split-active');
+    hint.textContent = '✏️ Click to add points — double-click or click first point to close — ↩ Undo last point';
+    hint.style.display = 'block';
+    cancelBtn.style.display = 'block';
+    map.getContainer().style.cursor = 'crosshair';
+  }} else if (mode === 'grid') {{
+    document.getElementById('btn-grid').classList.add('split-active');
+    hint.textContent = '⊞ Click cells to select (orange) — zoom in for smaller cells — tap confirm to zone';
+    hint.style.display = 'block';
+    cancelBtn.style.display = 'block';
+    map.getContainer().style.cursor = '';
+    buildGrid();
+  }} else {{
     document.getElementById('btn-click-zone').classList.add('active');
     hint.style.display = 'none';
     cancelBtn.style.display = 'none';
+    map.getContainer().style.cursor = '';
   }}
 }}
 
@@ -923,6 +1055,7 @@ function cancelZone() {{
   document.getElementById('zone-overlay').classList.remove('show');
   pendingGeojson = null;
   editingZoneId = null;
+  drawReset();
   clearGridSelection();
   setMode('click');
 }}
