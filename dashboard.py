@@ -762,8 +762,20 @@ function clearGridSelection() {{
 }}
 
 function buildGrid() {{
+  // Preserve selected area across zoom — save centre points of selected cells
+  const prevSelectedCentres = selectedCells.map(c => {{
+    const coords = c.geo.coordinates[0];
+    const lngs = coords.map(p=>p[0]), lats = coords.map(p=>p[1]);
+    return [
+      (Math.min(...lngs)+Math.max(...lngs))/2,
+      (Math.min(...lats)+Math.max(...lats))/2,
+    ];
+  }});
+  const prevSqm = selectedCells.reduce((s,c)=>s+c.sqm, 0);
+  const prevPlotName = selectedCells.length ? selectedCells[0].plotName : '';
+
   if (gridLayer) {{ map.removeLayer(gridLayer); gridLayer = null; }}
-  clearGridSelection();
+  selectedCells = [];   // reset array but NOT the confirm button yet
   const z = Math.min(21, Math.max(14, Math.round(map.getZoom())));
   const divs = DIVISIONS[z];
   gridLayer = L.layerGroup().addTo(map);
@@ -779,15 +791,27 @@ function buildGrid() {{
 
     for (let x = bb[0]; x < bb[2]; x += step) {{
       for (let y = bb[1]; y < bb[3]; y += step) {{
-        if (!turf.booleanPointInPolygon(turf.point([x+step/2, y+step/2]), poly)) continue;
+        const cx = x+step/2, cy = y+step/2;
+        if (!turf.booleanPointInPolygon(turf.point([cx, cy]), poly)) continue;
 
         const sqm = calcAreaSqm([[x,y],[x+step,y],[x+step,y+step],[x,y+step]]);
         const geo = {{type:'Polygon',coordinates:[[[x,y],[x+step,y],[x+step,y+step],[x,y+step],[x,y]]]}};
+
+        // Re-select if any previously selected centre falls inside this new cell
+        const wasSelected = prevSelectedCentres.some(([px,py]) =>
+          px >= x && px <= x+step && py >= y && py <= y+step
+        );
+
         const rect = L.rectangle([[y,x],[y+step,x+step]], {{
-          color:'#fdd835', weight:1.5, fillColor:'#fdd835', fillOpacity:0.15, dashArray:'4 3',
+          color: wasSelected?'#ff9800':'#fdd835',
+          weight: wasSelected?2.5:1.5,
+          fillColor: wasSelected?'#ff9800':'#fdd835',
+          fillOpacity: wasSelected?0.6:0.15,
+          dashArray:'4 3',
         }}).addTo(gridLayer);
 
         const cellObj = {{rect, geo, sqm, plotName}};
+        if (wasSelected) selectedCells.push(cellObj);
 
         rect.on('mouseover', () => {{
           if (!selectedCells.includes(cellObj))
@@ -812,6 +836,8 @@ function buildGrid() {{
       }}
     }}
   }});
+
+  updateConfirmBtn();
 }}
 
 map.on('zoomend', () => {{ if (currentMode === 'grid') buildGrid(); }});
