@@ -949,16 +949,24 @@ function drawFinish() {{
   openZoneForm(null, sqm, 'My Zone');
 }}
 
-// Map click → add point (draw mode only)
+// Guard: ignore the very first map-click that fires when the toolbar button is pressed,
+// and suppress the two rapid clicks that browsers fire before dblclick.
+let drawIgnoreNextClick = false;
+let drawDblClickPending = false;
+
 map.on('click', e => {{
-  if (currentMode === 'draw') drawAddPoint(e.latlng);
+  if (currentMode !== 'draw') return;
+  if (drawIgnoreNextClick) {{ drawIgnoreNextClick = false; return; }}
+  if (drawDblClickPending) return;   // swallow the 2nd click of a dbl-click
+  drawAddPoint(e.latlng);
 }});
-// Double-click → close polygon
+
 map.on('dblclick', e => {{
-  if (currentMode === 'draw' && drawPoints.length >= 3) {{
-    L.DomEvent.stopPropagation(e);
-    drawFinish();
-  }}
+  if (currentMode !== 'draw') return;
+  L.DomEvent.stopPropagation(e);
+  drawDblClickPending = true;
+  setTimeout(() => {{ drawDblClickPending = false; }}, 300);
+  if (drawPoints.length >= 3) drawFinish();
 }});
 
 // ── Mode switching ────────────────────────────────────────────────────────
@@ -969,7 +977,7 @@ function setMode(mode) {{
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active','split-active'));
 
   // Always clean up previous modes
-  if (mode !== 'draw') drawReset();
+  if (mode !== 'draw') {{ drawReset(); map.doubleClickZoom.enable(); }}
   if (mode !== 'grid') {{
     if (gridLayer) {{ map.removeLayer(gridLayer); gridLayer = null; }}
     clearGridSelection();
@@ -977,10 +985,12 @@ function setMode(mode) {{
 
   if (mode === 'draw') {{
     document.getElementById('btn-draw').classList.add('split-active');
-    hint.textContent = '✏️ Click to add points — double-click or click first point to close — ↩ Undo last point';
+    hint.textContent = '✏️ Click to place points — 3+ points needed — double-click or tap ✔ button to finish area';
     hint.style.display = 'block';
     cancelBtn.style.display = 'block';
     map.getContainer().style.cursor = 'crosshair';
+    map.doubleClickZoom.disable();
+    drawIgnoreNextClick = true;   // swallow the click that activated this button
   }} else if (mode === 'grid') {{
     document.getElementById('btn-grid').classList.add('split-active');
     hint.textContent = '⊞ Click cells to select (orange) — zoom in for smaller cells — tap confirm to zone';
