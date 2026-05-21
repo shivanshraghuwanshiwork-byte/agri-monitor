@@ -716,7 +716,7 @@ function renderZones() {{
 renderZones();
 
 // ── Grid overlay ─────────────────────────────────────────────────────────
-const DIVISIONS = {{14:2,15:3,16:4,17:6,18:9,19:13,20:18,21:25}};
+const DIVISIONS = {{14:2,15:2,16:3,17:4,18:5,19:6,20:8,21:10}};
 let selectedCells = [];   // {{rect, geo, sqm, plotName}}
 
 function updateConfirmBtn() {{
