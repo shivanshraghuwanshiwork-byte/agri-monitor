@@ -60,6 +60,48 @@ def build_html(farm: dict, stats: dict) -> str:
     evi_mean   = stats.get("evi_mean",  0) or 0
     stress_pct = stats.get("stress_pct", 0)
 
+    # Plain-language cards
+    crop_health_pct   = min(100, max(0, round(ndvi_mean / 0.8 * 100)))
+    crop_health_color = "#888888" if crop_health_pct < 15 else _health_color(ndvi_mean)
+    crop_health_no_crop = crop_health_pct < 15
+    crop_health_stage = (
+        "नंगी ज़मीन · No crop"        if crop_health_pct < 15 else
+        "शुरुआती बढ़त · Early growth" if crop_health_pct < 45 else
+        "अच्छी बढ़त · Growing well"   if crop_health_pct < 65 else
+        "पूरी बढ़त · Peak growth"     if crop_health_pct < 85 else
+        "घनी फसल · Dense crop"
+    )
+    crop_health_display = "—" if crop_health_no_crop else f"{crop_health_pct}%"
+    if lswi_mean < 0:
+        water_val   = "Drought"; water_sub = "सूखे का खतरा · leaves losing water"; water_color = "#ef5350"
+    elif lswi_mean < 0.15:
+        water_val   = "Low";     water_sub = "कम नमी · moisture getting low";       water_color = "#ffa726"
+    elif lswi_mean < 0.35:
+        water_val   = "OK";      water_sub = "ठीक है · leaf moisture normal";       water_color = "#fdd835"
+    else:
+        water_val   = "Good";    water_sub = "अच्छी नमी · good leaf moisture";      water_color = "#66bb6a"
+    water_bar_pct  = min(100, max(0, round((lswi_mean + 0.5) * 100)))
+    stress_color   = "#ef5350" if stress_pct > 30 else ("#ffa726" if stress_pct > 10 else "#66bb6a")
+    stress_sub     = ("ज़्यादा कमज़ोर · large area struggling" if stress_pct > 30 else
+                      ("कुछ हिस्सा कमज़ोर · some patches weak"  if stress_pct > 10 else
+                       "खेत ठीक है · field mostly healthy"))
+    early_warn_html = ("<div class='mc-tag tag orange' style='margin-top:5px'>⚠️ उभरता तनाव · Early stress</div>"
+                       if stats.get("ndre_stress") else "")
+
+    # Growth curve timeseries
+    timeseries   = stats.get("ndvi_timeseries", [])
+    ts_json      = json.dumps(timeseries)
+    heatmap_url  = stats.get("heatmap_url") or ""
+    spray        = stats.get("spray_advisory") or {}
+    spray_ok     = spray.get("ok", True)
+    spray_score  = spray.get("score", 80)
+    spray_label  = spray.get("label", "—")
+    spray_color  = "#66bb6a" if spray_score >= 75 else ("#ffa726" if spray_score >= 50 else "#ef5350")
+    spray_reasons_html = "".join(
+        f'<div class="spray-reason">{r}</div>'
+        for r in spray.get("reasons", [])
+    )
+
     badges = {
         "stress":      "🔴 Stress Detected",
         "no_data":     "☁️ No Data",
@@ -168,98 +210,212 @@ def build_html(farm: dict, stats: dict) -> str:
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
-html,body{{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e8eaf0;font-size:14px}}
+html,body{{height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0c14;color:#e2e8f0;font-size:14px}}
 #app{{display:flex;height:100vh;overflow:hidden}}
-#map{{flex:1;height:100%;z-index:1}}
+#map{{flex:1;height:100%;z-index:1;position:relative;overflow:hidden}}
 
-/* Sidebar */
-#sidebar{{width:390px;height:100%;background:#13151f;border-left:1px solid #2a2d3a;overflow-y:auto;display:flex;flex-direction:column;z-index:10}}
-#sb-head{{padding:14px 16px;background:#1a1d2e;border-bottom:1px solid #2a2d3a;flex-shrink:0}}
-#sb-body{{padding:14px 16px;flex:1}}
-.farm-title{{font-size:1.15em;font-weight:700;color:#4fc3f7}}
-.badge{{display:inline-block;margin-top:5px;padding:3px 12px;border-radius:20px;font-size:0.8em;font-weight:600;background:{badge_color}22;color:{badge_color};border:1px solid {badge_color}55}}
-.meta{{margin-top:7px;color:#8890a8;font-size:0.76em;line-height:1.9}}
+/* ── Sidebar shell ─────────────────────────────────────────── */
+#sidebar{{width:400px;height:100%;background:#0f1117;border-left:1px solid #1e2130;overflow:hidden;display:flex;flex-direction:column;z-index:10;box-shadow:-4px 0 24px #00000044}}
+#sb-head{{padding:16px 18px 14px;background:#0a0c14;border-bottom:1px solid #1e2130;flex-shrink:0;border-left:3px solid {badge_color}}}
+#sb-body{{padding:14px 16px;flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#2a2d3a transparent}}
+#sb-body::-webkit-scrollbar{{width:4px}}
+#sb-body::-webkit-scrollbar-track{{background:transparent}}
+#sb-body::-webkit-scrollbar-thumb{{background:#2a2d3a;border-radius:4px}}
 
-/* Pills */
-.pills{{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}}
-.pill{{padding:4px 13px;border-radius:20px;font-size:0.78em;font-weight:600;cursor:pointer;background:#21253a;border:1px solid #3a3d4a;color:#c0c8e0;transition:all .2s}}
-.pill:hover{{border-color:#4fc3f7;color:#4fc3f7}}
-.pill.active{{background:#1976d233;border-color:#4fc3f7;color:#4fc3f7}}
-.pill.zone-pill{{border-color:#ab47bc55;color:#ce93d8}}
-.pill.zone-pill.active{{background:#ab47bc22;border-color:#ab47bc;color:#ce93d8}}
+.farm-title{{font-size:1.1em;font-weight:700;color:#f0f4ff;letter-spacing:-0.2px}}
+.farm-subtitle{{font-size:0.75em;color:#5a6380;margin-top:2px}}
+.badge{{display:inline-flex;align-items:center;gap:5px;margin-top:8px;padding:4px 12px;border-radius:20px;font-size:0.78em;font-weight:600;background:{badge_color}18;color:{badge_color};border:1px solid {badge_color}40;letter-spacing:0.2px}}
+@keyframes pulse-dot{{0%,100%{{opacity:1}}50%{{opacity:0.4}}}}
+.badge-dot{{width:6px;height:6px;border-radius:50%;background:{badge_color};animation:pulse-dot 2s ease-in-out infinite}}
+.meta{{margin-top:8px;color:#4a5270;font-size:0.74em;line-height:2}}
 
-/* Sections */
-.sec{{margin-bottom:16px}}
-.sec-title{{font-size:0.67em;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#8890a8;margin-bottom:9px;padding-bottom:5px;border-bottom:1px solid #2a2d3a}}
-.mrow{{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1e2130;gap:8px;flex-wrap:wrap}}
+/* ── Pills ─────────────────────────────────────────────────── */
+.pills{{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}}
+.pill{{padding:4px 12px;border-radius:20px;font-size:0.77em;font-weight:600;cursor:pointer;background:#141824;border:1px solid #252836;color:#8890a8;transition:all .18s}}
+.pill:hover{{border-color:#4fc3f7;color:#4fc3f7;background:#4fc3f708}}
+.pill.active{{background:#4fc3f714;border-color:#4fc3f7;color:#4fc3f7}}
+.pill.zone-pill{{border-color:#ab47bc33;color:#ce93d8}}
+.pill.zone-pill.active{{background:#ab47bc14;border-color:#ab47bc;color:#ce93d8}}
+
+/* ── Sections ──────────────────────────────────────────────── */
+.sec{{margin-bottom:20px}}
+.sec-title{{font-size:0.65em;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:#4a5270;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #1a1d2a;display:flex;align-items:center;gap:6px}}
+.sec-title-icon{{font-size:1.1em}}
+
+/* ── Metric cards (2×2 grid) ───────────────────────────────── */
+.metric-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}}
+.metric-card{{background:#141824;border:1px solid #1e2235;border-radius:10px;padding:11px 13px;transition:border-color .2s}}
+.metric-card:hover{{border-color:#2a2d4a}}
+.mc-label{{font-size:0.7em;font-weight:600;color:#4a5270;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px}}
+.mc-value{{font-size:1.3em;font-weight:700;color:#e2e8f0;line-height:1;margin-bottom:5px}}
+.mc-sub{{font-size:0.71em;color:#5a6380;margin-bottom:6px}}
+.mc-bar{{height:4px;background:#1e2235;border-radius:2px;overflow:hidden}}
+.mc-bar-fill{{height:100%;border-radius:2px;transition:width .5s ease}}
+.mc-tag{{display:inline-block;margin-top:5px;padding:1px 7px;border-radius:8px;font-size:0.68em;font-weight:600}}
+
+/* ── Thin data rows (weather detail, soil, etc.) ───────────── */
+.mrow{{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #141824;gap:8px;flex-wrap:wrap}}
 .mrow:last-child{{border-bottom:none}}
-.ml{{font-size:0.83em;color:#c0c8e0;flex:1;min-width:130px}}
-.plain{{display:block;font-size:0.74em;color:#8890a8;margin-top:1px}}
-.mr{{font-size:0.88em;font-weight:700;display:flex;align-items:center;gap:5px;flex-wrap:wrap}}
-.bar-outer{{width:70px;height:5px;background:#2a2d3a;border-radius:3px;display:inline-block;vertical-align:middle;margin-right:5px}}
-.bar-inner{{height:100%;border-radius:3px}}
-.tag{{display:inline-block;padding:1px 8px;border-radius:10px;font-size:0.72em;font-weight:600}}
-.tag.red{{background:#e5393522;color:#e53935}}.tag.orange{{background:#fb8c0022;color:#fb8c00}}
-.tag.green{{background:#43a04722;color:#43a047}}.tag.blue{{background:#1976d222;color:#4fc3f7}}
-.tag.purple{{background:#ab47bc22;color:#ce93d8}}
-.fc-table{{width:100%;border-collapse:collapse;font-size:0.8em}}
-.fc-table th{{color:#8890a8;font-weight:600;padding:3px 5px;text-align:left;font-size:0.73em;text-transform:uppercase}}
-.fc-table td{{padding:5px 5px;border-bottom:1px solid #1e2130}}
+.ml{{font-size:0.82em;color:#b0b8d0;flex:1;min-width:120px}}
+.plain{{display:block;font-size:0.72em;color:#4a5270;margin-top:1px}}
+.mr{{font-size:0.87em;font-weight:700;display:flex;align-items:center;gap:5px;flex-wrap:wrap}}
+.bar-outer{{width:65px;height:4px;background:#1e2235;border-radius:2px;display:inline-block;vertical-align:middle;margin-right:5px}}
+.bar-inner{{height:100%;border-radius:2px}}
+
+/* ── Tags ──────────────────────────────────────────────────── */
+.tag{{display:inline-block;padding:1px 8px;border-radius:8px;font-size:0.7em;font-weight:600}}
+.tag.red{{background:#e5393518;color:#ef5350}}.tag.orange{{background:#fb8c0018;color:#ffa726}}
+.tag.green{{background:#43a04718;color:#66bb6a}}.tag.blue{{background:#1976d218;color:#4fc3f7}}
+.tag.purple{{background:#ab47bc18;color:#ce93d8}}
+
+/* ── Weather tile grid ─────────────────────────────────────── */
+.wx-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px}}
+.wx-tile{{background:#141824;border:1px solid #1e2235;border-radius:10px;padding:10px 8px;text-align:center}}
+.wx-icon{{font-size:1.4em;margin-bottom:4px}}
+.wx-val{{font-size:1.1em;font-weight:700;color:#e2e8f0}}
+.wx-lbl{{font-size:0.67em;color:#4a5270;margin-top:2px;text-transform:uppercase;letter-spacing:0.6px}}
+
+/* ── Forecast table ────────────────────────────────────────── */
+.fc-table{{width:100%;border-collapse:collapse;font-size:0.79em}}
+.fc-table th{{color:#4a5270;font-weight:600;padding:4px 6px;text-align:left;font-size:0.72em;text-transform:uppercase;letter-spacing:0.6px}}
+.fc-table td{{padding:6px 6px;border-bottom:1px solid #141824}}
 .fc-table tr:last-child td{{border-bottom:none}}
+.fc-table tr:hover td{{background:#14182400}}
 
-/* Toolbar */
-#map-toolbar{{position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:1000;display:flex;gap:8px;background:#13151fee;padding:7px 12px;border-radius:28px;border:1px solid #2a2d3a;box-shadow:0 2px 16px #0009}}
-.tb-btn{{background:none;border:1.5px solid #3a3d4a;color:#8890a8;padding:6px 16px;border-radius:20px;font-size:0.8em;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap}}
-.tb-btn:hover{{border-color:#4fc3f7;color:#4fc3f7}}
-.tb-btn.active{{background:#4fc3f722;border-color:#4fc3f7;color:#4fc3f7}}
-.tb-btn.split-active{{background:#ab47bc22;border-color:#ab47bc;color:#ce93d8}}
-.tb-btn.cancel{{border-color:#e5393555;color:#e53935}}
-.tb-btn.cancel:hover{{background:#e5393522}}
-#mode-hint{{position:absolute;top:62px;left:50%;transform:translateX(-50%);z-index:1000;background:#1a1d2eee;color:#fdd835;padding:6px 18px;border-radius:16px;font-size:0.8em;font-weight:600;border:1px solid #fdd83555;display:none;white-space:nowrap}}
+/* ── Map toolbar ───────────────────────────────────────────── */
+#map-toolbar{{position:absolute;top:16px;left:50%;transform:translateX(-50%);z-index:1000;display:flex;gap:6px;background:#0a0c14ee;padding:7px 10px;border-radius:32px;border:1px solid #1e2130;box-shadow:0 4px 24px #00000066;backdrop-filter:blur(8px)}}
+.tb-btn{{background:none;border:1.5px solid #252836;color:#6070a0;padding:6px 16px;border-radius:20px;font-size:0.79em;font-weight:600;cursor:pointer;transition:all .18s;white-space:nowrap;letter-spacing:0.2px}}
+.tb-btn:hover{{border-color:#4fc3f7;color:#4fc3f7;background:#4fc3f708}}
+.tb-btn.active{{background:#4fc3f714;border-color:#4fc3f7;color:#4fc3f7}}
+.tb-btn.split-active{{background:#ab47bc14;border-color:#ab47bc;color:#ce93d8}}
+.tb-btn.cancel{{border-color:#e5393540;color:#ef5350}}
+.tb-btn.cancel:hover{{background:#e5393514}}
+#mode-hint{{position:absolute;top:64px;left:50%;transform:translateX(-50%);z-index:1000;background:#0a0c14ee;color:#fdd835;padding:6px 18px;border-radius:16px;font-size:0.79em;font-weight:600;border:1px solid #fdd83540;display:none;white-space:nowrap;backdrop-filter:blur(8px);box-shadow:0 2px 12px #00000055}}
 
-/* Zone form overlay */
-#zone-overlay{{display:none;position:absolute;bottom:0;left:0;right:0;z-index:2000;background:#13151f;border-top:2px solid #4fc3f7;padding:18px;max-height:80vh;overflow-y:auto}}
-#zone-overlay.show{{display:block}}
-.form-title{{font-size:1em;font-weight:700;color:#4fc3f7;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}}
-.form-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}}
+/* ── Zone form (slide-up panel over map) ───────────────────── */
+#zone-overlay{{position:absolute;bottom:0;left:0;right:0;z-index:2000;background:#0f1117;border-top:2px solid #4fc3f7;display:flex;flex-direction:column;transform:translateY(105%);transition:transform .28s cubic-bezier(.4,0,.2,1);pointer-events:none;visibility:hidden;height:52vh;min-height:200px;max-height:90vh}}
+#zone-overlay.show{{transform:translateY(0);pointer-events:auto;visibility:visible}}
+#form-resize-handle{{flex-shrink:0;height:18px;cursor:ns-resize;display:flex;align-items:center;justify-content:center;background:#0a0c14;border-bottom:1px solid #1e2130;user-select:none;-webkit-user-select:none}}
+#form-resize-handle::before{{content:'';display:block;width:32px;height:4px;border-radius:2px;background:#2a2d3a}}
+#form-resize-handle:hover::before{{background:#4fc3f7}}
+.form-header{{padding:10px 18px 10px;background:#0a0c14;border-bottom:1px solid #1e2130;flex-shrink:0;display:flex;justify-content:space-between;align-items:center}}
+.form-title{{font-size:0.95em;font-weight:700;color:#4fc3f7}}
+.form-body{{padding:16px 18px;overflow-y:auto;flex:1;scrollbar-width:thin;scrollbar-color:#2a2d3a transparent}}
+.form-body::-webkit-scrollbar{{width:4px}}
+.form-body::-webkit-scrollbar-thumb{{background:#2a2d3a;border-radius:4px}}
+.form-footer{{padding:12px 18px;background:#0a0c14;border-top:1px solid #1e2130;flex-shrink:0;display:flex;gap:10px;justify-content:flex-end}}
+.form-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px}}
 .form-group{{display:flex;flex-direction:column;gap:4px}}
 .form-group.full{{grid-column:1/-1}}
-label{{font-size:0.75em;font-weight:600;color:#8890a8;text-transform:uppercase;letter-spacing:0.5px}}
-input,select,textarea{{background:#1e2130;border:1px solid #3a3d4a;color:#e8eaf0;padding:8px 10px;border-radius:8px;font-size:0.85em;font-family:inherit;outline:none;transition:border .2s}}
-input:focus,select:focus{{border-color:#4fc3f7}}
-select option{{background:#1e2130}}
-textarea{{resize:vertical;min-height:60px}}
-
-/* Section divider inside form */
-.form-section-label{{grid-column:1/-1;font-size:0.68em;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#4fc3f7;padding-top:10px;border-top:1px solid #2a2d3a;margin-top:4px}}
-
-.form-actions{{display:flex;gap:10px;justify-content:flex-end}}
-.btn-cancel{{background:none;border:1px solid #3a3d4a;color:#8890a8;padding:8px 18px;border-radius:8px;cursor:pointer;font-size:0.85em}}
-.btn-save{{background:#4fc3f7;color:#0f1117;border:none;padding:8px 22px;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.85em}}
+label{{font-size:0.72em;font-weight:600;color:#4a5270;text-transform:uppercase;letter-spacing:0.6px}}
+input,select,textarea{{background:#141824;border:1px solid #252836;color:#e2e8f0;padding:8px 11px;border-radius:8px;font-size:0.84em;font-family:inherit;outline:none;transition:border-color .18s,box-shadow .18s}}
+input:focus,select:focus,textarea:focus{{border-color:#4fc3f7;box-shadow:0 0 0 3px #4fc3f714}}
+select option{{background:#141824}}
+textarea{{resize:vertical;min-height:58px}}
+.form-section-label{{grid-column:1/-1;font-size:0.66em;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#4fc3f7;padding-top:12px;border-top:1px solid #1e2130;margin-top:6px}}
+.btn-cancel{{background:none;border:1px solid #252836;color:#6070a0;padding:8px 18px;border-radius:8px;cursor:pointer;font-size:0.84em;transition:all .18s}}
+.btn-cancel:hover{{border-color:#4a5270;color:#e2e8f0}}
+.btn-save{{background:#4fc3f7;color:#060810;border:none;padding:8px 22px;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.84em;transition:background .18s}}
 .btn-save:hover{{background:#81d4fa}}
 
-/* Zone detail panel */
-#zone-detail{{display:none;background:#1a1d2e;border-radius:10px;padding:14px;margin-bottom:14px;border:1px solid #ab47bc55}}
+/* ── Zone detail panel ─────────────────────────────────────── */
+#zone-detail{{display:none;background:#141824;border-radius:12px;padding:14px;margin-bottom:14px;border:1px solid #ab47bc33}}
 #zone-detail.show{{display:block}}
-.zone-detail-title{{font-size:1em;font-weight:700;color:#ce93d8;margin-bottom:10px;display:flex;justify-content:space-between}}
-.zone-kv{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #2a2d3a;font-size:0.83em}}
+.zone-detail-title{{font-size:0.95em;font-weight:700;color:#ce93d8;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}}
+.zone-kv{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1e2130;font-size:0.82em}}
 .zone-kv:last-child{{border-bottom:none}}
-.zone-k{{color:#8890a8}}.zone-v{{font-weight:600;color:#e8eaf0}}
-.btn-edit-zone{{background:none;border:1px solid #ab47bc55;color:#ce93d8;padding:4px 12px;border-radius:8px;font-size:0.75em;cursor:pointer;margin-top:8px}}
-.btn-edit-zone:hover{{background:#ab47bc22}}
-.btn-delete-zone{{background:none;border:1px solid #e5393555;color:#e53935;padding:4px 10px;border-radius:8px;font-size:0.75em;cursor:pointer;margin-top:8px;margin-left:6px}}
+.zone-k{{color:#4a5270}}.zone-v{{font-weight:600;color:#e2e8f0;text-align:right;max-width:60%}}
+.btn-edit-zone{{background:none;border:1px solid #ab47bc33;color:#ce93d8;padding:4px 12px;border-radius:8px;font-size:0.74em;cursor:pointer;margin-top:10px;transition:all .18s}}
+.btn-edit-zone:hover{{background:#ab47bc14}}
+.btn-delete-zone{{background:none;border:1px solid #e5393530;color:#ef5350;padding:4px 10px;border-radius:8px;font-size:0.74em;cursor:pointer;margin-top:10px;margin-left:6px;transition:all .18s}}
+.btn-delete-zone:hover{{background:#e5393514}}
 
-/* Irrigation badge */
-.irr-badge{{display:inline-block;padding:2px 10px;border-radius:10px;font-size:0.75em;font-weight:600;background:#1976d233;color:#4fc3f7;border:1px solid #1976d255}}
+/* ── Growth curve chart ────────────────────────────────────── */
+.stage-table{{margin-top:10px;background:#0a0c14;border:1px solid #1e2235;border-radius:10px;padding:10px 12px}}
+.stage-title{{font-size:0.7em;font-weight:700;color:#8a9bb0;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}}
+.stage-row{{display:grid;grid-template-columns:10px 44px 1fr;align-items:center;gap:8px;padding:4px 6px;border-radius:6px;font-size:0.78em;color:#8a9bb0}}
+.stage-row-active{{background:#1a1f30;color:#e0e8f0;font-weight:600}}
+.stage-dot{{width:8px;height:8px;border-radius:50%;flex-shrink:0}}
+.stage-range{{font-size:0.9em;color:#5a6a7a;white-space:nowrap}}
+.stage-row-active .stage-range{{color:#8a9bb0}}
+.chart-wrap{{background:#0a0c14;border:1px solid #1e2235;border-radius:10px;padding:12px;margin-bottom:4px;position:relative}}
+.chart-wrap canvas{{max-height:180px}}
+.chart-legend{{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}}
+.chart-leg-item{{display:flex;align-items:center;gap:5px;font-size:0.72em;color:#8890a8}}
+.chart-leg-dot{{width:8px;height:8px;border-radius:50%;flex-shrink:0}}
+.chart-empty{{color:#4a5270;font-size:0.82em;text-align:center;padding:24px 0}}
+.chart-note{{font-size:0.68em;color:#4a5270;margin-top:6px;text-align:right}}
+
+/* ── Spray advisory ────────────────────────────────────────── */
+.spray-score-ring{{display:flex;align-items:center;gap:12px;margin-bottom:10px}}
+.spray-ring-num{{font-size:1.8em;font-weight:800;line-height:1}}
+.spray-ring-label{{font-size:0.85em;font-weight:700}}
+.spray-reason{{font-size:0.79em;color:#b0b8d0;padding:4px 0;border-bottom:1px solid #141824;display:flex;gap:6px}}
+.spray-reason:last-child{{border-bottom:none}}
+
+/* ── Heatmap toggle ────────────────────────────────────────── */
+#btn-heatmap{{background:none;border:1.5px solid #252836;color:#6070a0;padding:6px 14px;border-radius:20px;font-size:0.79em;font-weight:600;cursor:pointer;transition:all .18s;white-space:nowrap}}
+#btn-heatmap:hover{{border-color:#ffa726;color:#ffa726}}
+#btn-heatmap.active{{background:#ffa72614;border-color:#ffa726;color:#ffa726}}
+#btn-heatmap.unavail{{opacity:0.35;cursor:not-allowed}}
+#heatmap-legend{{position:absolute;bottom:90px;left:12px;z-index:1001;background:#0a0c14ee;border:1px solid #1e2130;border-radius:10px;padding:8px 12px;display:none;backdrop-filter:blur(8px)}}
+#heatmap-legend.show{{display:block}}
+.hm-grad{{width:130px;height:8px;border-radius:4px;background:linear-gradient(to right,#d73027,#f46d43,#fdae61,#d9ef8b,#66bd63,#1a9850);margin:4px 0}}
+.hm-labels{{display:flex;justify-content:space-between;font-size:0.65em;color:#8890a8}}
+
+/* ── Irrigation event list ─────────────────────────────────── */
+.irr-list{{display:flex;flex-direction:column;gap:8px;margin-top:6px}}
+.irr-row{{background:#0f1117;border:1px solid #1e2235;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:7px;position:relative}}
+.irr-row-top{{display:grid;grid-template-columns:1fr 1fr;gap:7px}}
+.irr-row-bot{{display:grid;grid-template-columns:1fr 1fr;gap:7px}}
+.irr-row-num{{position:absolute;top:-8px;left:12px;font-size:0.65em;font-weight:700;color:#4fc3f7;background:#0a0c14;padding:0 6px;border-radius:4px;letter-spacing:0.5px}}
+.irr-row-del{{position:absolute;top:8px;right:10px;background:none;border:none;color:#e5393560;font-size:1em;cursor:pointer;padding:2px 6px;border-radius:6px;line-height:1;transition:color .15s}}
+.irr-row-del:hover{{color:#ef5350}}
+.btn-add-irr{{display:flex;align-items:center;gap:6px;background:none;border:1.5px dashed #1e2235;color:#4a5270;padding:8px 14px;border-radius:10px;cursor:pointer;font-size:0.82em;font-weight:600;width:100%;justify-content:center;margin-top:4px;transition:all .18s}}
+.btn-add-irr:hover{{border-color:#4fc3f7;color:#4fc3f7}}
+.irr-summary{{margin-top:8px;background:#141824;border:1px solid #1e2235;border-radius:10px;padding:10px 14px;font-size:0.78em;display:flex;flex-wrap:wrap;gap:10px;align-items:center}}
+.irr-sum-chip{{display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:8px;font-weight:600}}
+.irr-sum-chip.blue{{background:#1976d218;color:#4fc3f7;border:1px solid #1976d230}}
+.irr-sum-chip.orange{{background:#fb8c0018;color:#ffa726;border:1px solid #fb8c0030}}
+.irr-sum-chip.green{{background:#43a04718;color:#66bb6a;border:1px solid #43a04730}}
+.irr-sum-chip.red{{background:#e5393518;color:#ef5350;border:1px solid #e5393530}}
+/* detail timeline */
+.irr-timeline{{display:flex;flex-direction:column;gap:6px;margin-top:4px}}
+.irr-tl-row{{display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-bottom:1px solid #1a1d2a;font-size:0.8em}}
+.irr-tl-row:last-child{{border-bottom:none}}
+.irr-tl-dot{{width:8px;height:8px;border-radius:50%;background:#4fc3f7;flex-shrink:0;margin-top:4px}}
+.irr-tl-dot.overlap{{background:#ffa726}}
+.irr-tl-body{{flex:1}}
+.irr-tl-date{{font-weight:700;color:#e2e8f0}}
+.irr-tl-meta{{color:#4a5270;margin-top:2px}}
+
+/* ── Location button & marker ──────────────────────────────── */
+#btn-locate{{border:1.5px solid #252836;color:#6070a0;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .18s;flex-shrink:0;font-size:1em;position:absolute;bottom:90px;right:12px;z-index:1000;box-shadow:0 2px 10px #00000055;background:#0a0c14ee}}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{{background:#141824;border:1px solid #252836;box-shadow:0 4px 16px #00000066;padding:0}}
+.leaflet-popup-content{{margin:0}}
+#btn-locate:hover{{border-color:#4fc3f7;color:#4fc3f7}}
+#btn-locate.locating{{border-color:#fdd835;color:#fdd835;animation:spin .8s linear infinite}}
+#btn-locate.located{{border-color:#66bb6a;color:#66bb6a}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+#loc-toast{{position:absolute;bottom:136px;right:12px;z-index:1001;background:#0a0c14ee;color:#e2e8f0;padding:6px 14px;border-radius:10px;font-size:0.75em;font-weight:600;border:1px solid #1e2130;display:none;white-space:nowrap;backdrop-filter:blur(8px)}}
+
+/* ── Misc ──────────────────────────────────────────────────── */
+.irr-badge{{display:inline-block;padding:2px 10px;border-radius:8px;font-size:0.74em;font-weight:600;background:#1976d218;color:#4fc3f7;border:1px solid #1976d230}}
+.empty-state{{color:#4a5270;font-size:0.82em;padding:10px 0;text-align:center}}
+
+@keyframes fadeIn{{from{{opacity:0;transform:translateY(4px)}}to{{opacity:1;transform:translateY(0)}}}}
+.sec{{animation:fadeIn .3s ease both}}
 
 @media(max-width:700px){{
   #app{{flex-direction:column}}
-  #map{{height:50vh}}
-  #sidebar{{width:100%;height:50vh;border-left:none;border-top:1px solid #2a2d3a}}
+  #map{{height:52vh}}
+  #sidebar{{width:100%;height:48vh;border-left:none;border-top:1px solid #1e2130}}
   .form-grid{{grid-template-columns:1fr}}
-  #zone-overlay{{max-height:70vh}}
+  .metric-grid{{grid-template-columns:1fr 1fr}}
+  .wx-grid{{grid-template-columns:repeat(3,1fr)}}
 }}
 </style>
 </head>
@@ -271,8 +427,17 @@ textarea{{resize:vertical;min-height:60px}}
       <button id="btn-draw" class="tb-btn" onclick="setMode('draw')">✏️ Draw Zone</button>
       <button id="btn-grid" class="tb-btn" onclick="setMode('grid')">⊞ Grid Zones</button>
       <button id="btn-cancel-mode" class="tb-btn cancel" onclick="setMode('click')" style="display:none">✕ Cancel</button>
+      <button id="btn-heatmap" onclick="toggleHeatmap()" title="NDVI heatmap overlay">🌡 NDVI Map</button>
     </div>
     <div id="mode-hint"></div>
+    <div id="heatmap-legend">
+      <div style="font-size:0.72em;font-weight:700;color:#ffa726;margin-bottom:4px">NDVI Health Map</div>
+      <div class="hm-grad"></div>
+      <div class="hm-labels"><span>0 Bare</span><span>0.4 Mod</span><span>0.8 Dense</span></div>
+      <div style="font-size:0.65em;color:#4a5270;margin-top:5px">Sentinel-2 · {date}</div>
+    </div>
+    <button id="btn-locate" onclick="locateMe()" title="My location · मेरी लोकेशन">📍</button>
+    <div id="loc-toast"></div>
     <div id="draw-undo-btn" onclick="drawUndo()" style="display:none;position:absolute;bottom:72px;left:50%;transform:translateX(-50%);z-index:1000;background:#1a1d2eee;color:#e8eaf0;padding:7px 20px;border-radius:20px;font-size:0.8em;font-weight:600;cursor:pointer;box-shadow:0 2px 12px #0009;border:1px solid #3a3d4a;white-space:nowrap">↩ Undo last point</div>
     <div id="draw-confirm-btn" onclick="drawFinish()" style="display:none;position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:1000;background:#4fc3f7;color:#0f1117;padding:10px 28px;border-radius:28px;font-size:0.88em;font-weight:700;cursor:pointer;box-shadow:0 2px 16px #0009;white-space:nowrap;border:none"></div>
     <div id="grid-confirm-btn" onclick="confirmGridSelection()" style="display:none;position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:1000;background:#ff9800;color:#0f1117;padding:10px 28px;border-radius:28px;font-size:0.88em;font-weight:700;cursor:pointer;box-shadow:0 2px 16px #0009;white-space:nowrap;border:none"></div>
@@ -280,92 +445,93 @@ textarea{{resize:vertical;min-height:60px}}
 
   <!-- Zone form overlay (shown over map) -->
   <div id="zone-overlay">
-    <div class="form-title">
-      <span id="form-title-text">✏️ Add Zone Details</span>
-      <button class="btn-cancel" onclick="cancelZone()">✕</button>
+    <div id="form-resize-handle"></div>
+    <div class="form-header">
+      <span class="form-title" id="form-title-text">✏️ Add Zone Details</span>
+      <button class="btn-cancel" onclick="cancelZone()" style="padding:4px 10px;font-size:0.8em">✕</button>
     </div>
-
+    <div class="form-body">
     <div class="form-grid">
 
-      <!-- ── Basic info ── -->
-      <div class="form-section-label">Basic Info</div>
+      <!-- ── Basic info / बेसिक जानकारी ── -->
+      <div class="form-section-label">Basic Info · बेसिक जानकारी</div>
 
       <div class="form-group">
-        <label>Zone / Field Name *</label>
-        <input id="z-name" type="text" placeholder="e.g. North Section, Khasra 45">
+        <label>Zone / Field Name · क्षेत्र का नाम *</label>
+        <input id="z-name" type="text" placeholder="e.g. North Section, Khasra 45 / उत्तरी खेत">
       </div>
       <div class="form-group">
-        <label>Khasra / Survey No.</label>
+        <label>Khasra / Survey No. · खसरा नं.</label>
         <input id="z-khasra" type="text" placeholder="e.g. 123/2">
       </div>
       <div class="form-group">
-        <label>Land Type</label>
+        <label>Land Type · भूमि प्रकार</label>
         <select id="z-land-type">
-          <option value="">— Select —</option>
-          <option value="Irrigated">Irrigated (सिंचित)</option>
-          <option value="Rain-fed">Rain-fed (बारानी)</option>
-          <option value="Upland">Upland (ऊँची ज़मीन)</option>
-          <option value="Lowland">Lowland / Flood-prone (निचली ज़मीन)</option>
-          <option value="Bund / Ridge">Bund / Ridge land</option>
+          <option value="">— Select / चुनें —</option>
+          <option value="Irrigated">Irrigated · सिंचित</option>
+          <option value="Rain-fed">Rain-fed · बारानी</option>
+          <option value="Upland">Upland · ऊँची ज़मीन</option>
+          <option value="Lowland">Lowland / Flood-prone · निचली ज़मीन</option>
+          <option value="Bund / Ridge">Bund / Ridge · मेड़ की ज़मीन</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Soil Type</label>
+        <label>Soil Type · मिट्टी का प्रकार</label>
         <select id="z-soil">
-          <option value="">— Select —</option>
-          <option value="Black cotton">Black cotton / Vertisol (काली मिट्टी)</option>
-          <option value="Red laterite">Red laterite (लाल मिट्टी)</option>
-          <option value="Alluvial loam">Alluvial loam (दोमट)</option>
-          <option value="Sandy loam">Sandy loam (बलुई दोमट)</option>
-          <option value="Clay">Heavy clay (चिकनी)</option>
-          <option value="Sandy">Sandy (बलुई)</option>
-          <option value="Saline / Usar">Saline / Usar (ऊसर)</option>
+          <option value="">— Select / चुनें —</option>
+          <option value="Black cotton">Black cotton · काली मिट्टी (Vertisol)</option>
+          <option value="Red laterite">Red laterite · लाल मिट्टी</option>
+          <option value="Alluvial loam">Alluvial loam · दोमट</option>
+          <option value="Sandy loam">Sandy loam · बलुई दोमट</option>
+          <option value="Clay">Heavy clay · चिकनी मिट्टी</option>
+          <option value="Sandy">Sandy · बलुई</option>
+          <option value="Saline / Usar">Saline / Usar · ऊसर</option>
         </select>
       </div>
 
-      <!-- ── Crop ── -->
-      <div class="form-section-label">Crop Details</div>
+      <!-- ── Crop / फसल ── -->
+      <div class="form-section-label">Crop Details · फसल की जानकारी</div>
 
       <div class="form-group">
-        <label>Crop Sowed</label>
+        <label>Crop Sowed · बोई गई फसल</label>
         <select id="z-crop">
-          <option value="">— Select crop —</option>
-          <optgroup label="Kharif (खरीफ)">
-            <option value="Soybean">Soybean (सोयाबीन)</option>
-            <option value="Maize">Maize / Makka (मक्का)</option>
-            <option value="Groundnut">Groundnut (मूंगफली)</option>
-            <option value="Cotton">Cotton (कपास)</option>
-            <option value="Urad Dal">Urad Dal (उड़द)</option>
-            <option value="Moong Dal">Moong Dal (मूंग)</option>
-            <option value="Arhar / Tur">Arhar / Tur Dal (अरहर)</option>
-            <option value="Sesame">Sesame / Til (तिल)</option>
-            <option value="Jowar">Jowar (ज्वार)</option>
-            <option value="Bajra">Bajra (बाजरा)</option>
-            <option value="Rice">Paddy / Rice (धान)</option>
+          <option value="">— Select crop / फसल चुनें —</option>
+          <optgroup label="Kharif · खरीफ">
+            <option value="Soybean">Soybean · सोयाबीन</option>
+            <option value="Maize">Maize · मक्का</option>
+            <option value="Groundnut">Groundnut · मूंगफली</option>
+            <option value="Cotton">Cotton · कपास</option>
+            <option value="Urad Dal">Urad Dal · उड़द</option>
+            <option value="Moong Dal">Moong Dal · मूंग</option>
+            <option value="Arhar / Tur">Arhar / Tur Dal · अरहर</option>
+            <option value="Sesame">Sesame · तिल</option>
+            <option value="Jowar">Jowar · ज्वार</option>
+            <option value="Bajra">Bajra · बाजरा</option>
+            <option value="Rice">Paddy / Rice · धान</option>
           </optgroup>
-          <optgroup label="Rabi (रबी)">
-            <option value="Wheat">Wheat (गेहूँ)</option>
-            <option value="Chickpea">Chickpea / Chana (चना)</option>
-            <option value="Mustard">Mustard / Sarson (सरसों)</option>
-            <option value="Lentil">Lentil / Masoor (मसूर)</option>
-            <option value="Garlic">Garlic (लहसुन)</option>
-            <option value="Onion">Onion (प्याज)</option>
-            <option value="Potato">Potato (आलू)</option>
+          <optgroup label="Rabi · रबी">
+            <option value="Wheat">Wheat · गेहूँ</option>
+            <option value="Chickpea">Chickpea · चना</option>
+            <option value="Mustard">Mustard · सरसों</option>
+            <option value="Lentil">Lentil · मसूर</option>
+            <option value="Garlic">Garlic · लहसुन</option>
+            <option value="Onion">Onion · प्याज</option>
+            <option value="Potato">Potato · आलू</option>
           </optgroup>
-          <optgroup label="Other">
-            <option value="Sugarcane">Sugarcane (गन्ना)</option>
-            <option value="Banana">Banana (केला)</option>
-            <option value="Vegetable">Vegetables (सब्ज़ी)</option>
-            <option value="Fallow">Fallow / Khali (खाली)</option>
-            <option value="Other">Other</option>
+          <optgroup label="Other · अन्य">
+            <option value="Sugarcane">Sugarcane · गन्ना</option>
+            <option value="Banana">Banana · केला</option>
+            <option value="Vegetable">Vegetables · सब्ज़ी</option>
+            <option value="Fallow">Fallow · खाली / परती</option>
+            <option value="Other">Other · अन्य</option>
           </optgroup>
         </select>
       </div>
       <div class="form-group">
-        <label>Seed Variety</label>
+        <label>Seed Variety · बीज किस्म</label>
         <select id="z-variety">
-          <option value="">— Select variety —</option>
-          <optgroup label="Soybean">
+          <option value="">— Select / चुनें —</option>
+          <optgroup label="Soybean · सोयाबीन">
             <option value="JS 9305">JS 9305</option>
             <option value="JS 335">JS 335</option>
             <option value="JS 9560">JS 9560</option>
@@ -373,204 +539,167 @@ textarea{{resize:vertical;min-height:60px}}
             <option value="MACS 450">MACS 450</option>
             <option value="NRC 7">NRC 7</option>
           </optgroup>
-          <optgroup label="Wheat">
+          <optgroup label="Wheat · गेहूँ">
             <option value="GW 322">GW 322</option>
             <option value="HI 8498">HI 8498 (Malav Shakti)</option>
             <option value="MP 3173">MP 3173</option>
             <option value="Raj 4120">Raj 4120</option>
           </optgroup>
-          <optgroup label="Maize">
+          <optgroup label="Maize · मक्का">
             <option value="DKC 9108">DKC 9108</option>
             <option value="NK 6240">NK 6240</option>
             <option value="PAC 740">PAC 740</option>
           </optgroup>
-          <option value="Local / Desi">Local / Desi variety</option>
-          <option value="Other">Other (fill in notes)</option>
+          <option value="Local / Desi">Local / Desi · देसी किस्म</option>
+          <option value="Other">Other · अन्य (notes में लिखें)</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Sowing Date</label>
+        <label>Sowing Date · बुवाई की तारीख</label>
         <input id="z-sowing" type="date">
       </div>
       <div class="form-group">
-        <label>Seed Rate</label>
+        <label>Seed Rate · बीज दर</label>
         <select id="z-seed-rate">
-          <option value="">— Select —</option>
-          <option value="20–25 kg/acre">20–25 kg/acre (Soybean standard)</option>
+          <option value="">— Select / चुनें —</option>
+          <option value="20–25 kg/acre">20–25 kg/acre (Soybean · सोयाबीन)</option>
           <option value="30–35 kg/acre">30–35 kg/acre (Soybean heavy)</option>
-          <option value="40–45 kg/acre">40–45 kg/acre (Wheat)</option>
-          <option value="8–10 kg/acre">8–10 kg/acre (Maize hybrid)</option>
-          <option value="3–4 kg/acre">3–4 kg/acre (Cotton / Bajra)</option>
-          <option value="6–8 kg/acre">6–8 kg/acre (Chickpea / Arhar)</option>
-          <option value="Other">Other (fill in notes)</option>
+          <option value="40–45 kg/acre">40–45 kg/acre (Wheat · गेहूँ)</option>
+          <option value="8–10 kg/acre">8–10 kg/acre (Maize · मक्का hybrid)</option>
+          <option value="3–4 kg/acre">3–4 kg/acre (Cotton · कपास / Bajra · बाजरा)</option>
+          <option value="6–8 kg/acre">6–8 kg/acre (Chickpea · चना / Arhar · अरहर)</option>
+          <option value="Other">Other · अन्य</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Seed Treatment</label>
+        <label>Seed Treatment · बीज उपचार</label>
         <select id="z-seed-treat">
-          <option value="">— Select —</option>
-          <option value="Rhizobium + PSB">Rhizobium + PSB inoculant (Soybean)</option>
-          <option value="Thiram + Carbendazim">Thiram + Carbendazim (fungicide)</option>
-          <option value="Imidacloprid">Imidacloprid (insecticide seed coat)</option>
-          <option value="Trichoderma">Trichoderma (bio-fungicide)</option>
+          <option value="">— Select / चुनें —</option>
+          <option value="Rhizobium + PSB">Rhizobium + PSB (Soybean · सोयाबीन)</option>
+          <option value="Thiram + Carbendazim">Thiram + Carbendazim (फफूंदनाशी)</option>
+          <option value="Imidacloprid">Imidacloprid (कीटनाशी बीज लेप)</option>
+          <option value="Trichoderma">Trichoderma (जैव फफूंदनाशी)</option>
           <option value="Bavistin">Bavistin (Carbendazim)</option>
-          <option value="No treatment">No treatment</option>
-          <option value="Other">Other (fill in notes)</option>
+          <option value="No treatment">No treatment · उपचार नहीं</option>
+          <option value="Other">Other · अन्य</option>
         </select>
       </div>
 
-      <!-- ── Irrigation ── -->
-      <div class="form-section-label">Irrigation</div>
+      <!-- ── Irrigation / सिंचाई ── -->
+      <div class="form-section-label" style="grid-column:1/-1">Irrigation Events · सिंचाई का रिकॉर्ड</div>
 
-      <div class="form-group">
-        <label>Irrigation Method</label>
-        <select id="z-irr-method">
-          <option value="">— Select —</option>
-          <option value="Flood">Flood / Furrow (बाढ़ सिंचाई)</option>
-          <option value="Drip">Drip irrigation (टपक)</option>
-          <option value="Sprinkler">Sprinkler / Mini sprinkler</option>
-          <option value="Canal">Canal water (नहर)</option>
-          <option value="Borewell">Borewell / Tubewell</option>
-          <option value="Open well">Open well (कुआँ)</option>
-          <option value="Farm pond">Farm pond (तालाब)</option>
-          <option value="Rain-fed">Rain-fed only (बारानी)</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Water Source</label>
-        <select id="z-water-source">
-          <option value="">— Select —</option>
-          <option value="Borewell">Borewell / Tubewell</option>
-          <option value="Canal">Canal (नहर)</option>
-          <option value="River / Nala">River / Nala</option>
-          <option value="Farm pond">Farm pond</option>
-          <option value="Open well">Open well (कुआँ)</option>
-          <option value="Tanker">Water tanker</option>
-          <option value="Rain-fed">Rain only</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Last Irrigation Date</label>
-        <input id="z-irrigation" type="date">
-      </div>
-      <div class="form-group">
-        <label>Irrigation Frequency</label>
-        <select id="z-irr-freq">
-          <option value="">— Select —</option>
-          <option value="Every 7 days">Every 7 days</option>
-          <option value="Every 10 days">Every 10 days</option>
-          <option value="Every 15 days">Every 15 days</option>
-          <option value="Every 21 days">Every 21 days (3 weeks)</option>
-          <option value="As needed">As needed / on demand</option>
-          <option value="Rain-fed">No irrigation — rain-fed</option>
-        </select>
+      <div class="form-group full">
+        <div class="irr-list" id="irr-list"></div>
+        <button type="button" class="btn-add-irr" onclick="addIrrRow()">＋ Add irrigation event · सिंचाई जोड़ें</button>
+        <div class="irr-summary" id="irr-summary" style="display:none"></div>
       </div>
 
-      <!-- ── Inputs applied ── -->
-      <div class="form-section-label">Inputs Applied</div>
+      <!-- ── Inputs applied / खाद व दवाइयाँ ── -->
+      <div class="form-section-label">Inputs Applied · खाद एवं दवाइयाँ</div>
 
       <div class="form-group">
-        <label>Base Fertiliser (at sowing)</label>
+        <label>Base Fertiliser · मूल खाद (बुवाई पर)</label>
         <select id="z-fert-base">
-          <option value="">— Select —</option>
+          <option value="">— Select / चुनें —</option>
           <option value="DAP 50 kg/acre">DAP 50 kg/acre</option>
-          <option value="DAP 25 kg/acre">DAP 25 kg/acre (half dose)</option>
+          <option value="DAP 25 kg/acre">DAP 25 kg/acre (आधा डोज़)</option>
           <option value="SSP 100 kg/acre">SSP 100 kg/acre</option>
           <option value="NPK 12:32:16 50kg/acre">NPK 12:32:16 @ 50 kg/acre</option>
-          <option value="Urea 25 kg/acre">Urea 25 kg/acre</option>
-          <option value="MOP 25 kg/acre">MOP (Potash) 25 kg/acre</option>
-          <option value="Zinc sulphate 10 kg/acre">Zinc sulphate 10 kg/acre</option>
-          <option value="FYM 4 ton/acre">FYM / Compost 4 ton/acre</option>
-          <option value="No basal">No basal fertiliser</option>
-          <option value="Other">Other (fill in notes)</option>
+          <option value="Urea 25 kg/acre">Urea · यूरिया 25 kg/acre</option>
+          <option value="MOP 25 kg/acre">MOP (Potash · पोटाश) 25 kg/acre</option>
+          <option value="Zinc sulphate 10 kg/acre">Zinc sulphate · जिंक 10 kg/acre</option>
+          <option value="FYM 4 ton/acre">FYM / Compost · गोबर खाद 4 ton/acre</option>
+          <option value="No basal">No basal · कोई नहीं</option>
+          <option value="Other">Other · अन्य</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Top Dressing Fertiliser</label>
+        <label>Top Dressing · टॉप ड्रेसिंग</label>
         <select id="z-fert-top">
-          <option value="">— Select —</option>
+          <option value="">— Select / चुनें —</option>
           <option value="Urea 25 kg/acre at 30 days">Urea 25 kg/acre at 30 days</option>
           <option value="Urea 50 kg/acre at 30 days">Urea 50 kg/acre at 30 days</option>
-          <option value="NPK 19:19:19 foliar spray">NPK 19:19:19 foliar spray</option>
+          <option value="NPK 19:19:19 foliar spray">NPK 19:19:19 foliar · पत्ती स्प्रे</option>
           <option value="DAP 2% foliar spray">DAP 2% foliar spray</option>
-          <option value="Boron 0.2% foliar">Boron 0.2% foliar spray</option>
-          <option value="Micronutrient mix foliar">Micronutrient mix foliar</option>
-          <option value="Not applied">Not applied yet</option>
-          <option value="Other">Other (fill in notes)</option>
+          <option value="Boron 0.2% foliar">Boron · बोरॉन 0.2% foliar</option>
+          <option value="Micronutrient mix foliar">Micronutrient mix · सूक्ष्म पोषक</option>
+          <option value="Not applied">Not applied · अभी नहीं</option>
+          <option value="Other">Other · अन्य</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Herbicide / Weedicide</label>
+        <label>Herbicide · खरपतवारनाशी</label>
         <select id="z-herbicide">
-          <option value="">— Select —</option>
+          <option value="">— Select / चुनें —</option>
           <option value="Imazethapyr (Pursuit)">Imazethapyr / Pursuit (Soybean)</option>
           <option value="Quizalofop (Targa Super)">Quizalofop / Targa Super</option>
-          <option value="Pendimethalin (pre-emergence)">Pendimethalin (pre-emergence)</option>
-          <option value="Atrazine (Maize)">Atrazine (Maize)</option>
-          <option value="2,4-D (Wheat)">2,4-D (Wheat broadleaf)</option>
+          <option value="Pendimethalin (pre-emergence)">Pendimethalin (pre-emergence · बुवाई पहले)</option>
+          <option value="Atrazine (Maize)">Atrazine (Maize · मक्का)</option>
+          <option value="2,4-D (Wheat)">2,4-D (Wheat · गेहूँ broadleaf)</option>
           <option value="Clodinafop (Topik Wheat)">Clodinafop / Topik (Wheat narrow)</option>
-          <option value="Manual weeding">Manual weeding only</option>
-          <option value="Not applied">Not applied</option>
-          <option value="Other">Other (fill in notes)</option>
+          <option value="Manual weeding">Manual weeding · हाथ से निराई</option>
+          <option value="Not applied">Not applied · नहीं डाला</option>
+          <option value="Other">Other · अन्य</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Insecticide / Pesticide</label>
+        <label>Insecticide · कीटनाशी</label>
         <select id="z-pesticide">
-          <option value="">— Select —</option>
+          <option value="">— Select / चुनें —</option>
           <option value="Chlorpyrifos 20EC">Chlorpyrifos 20EC</option>
           <option value="Lambda-cyhalothrin">Lambda-cyhalothrin (Karate)</option>
           <option value="Imidacloprid (Confidor)">Imidacloprid / Confidor</option>
           <option value="Profenofos + Cypermethrin">Profenofos + Cypermethrin</option>
           <option value="Thiamethoxam (Actara)">Thiamethoxam / Actara</option>
           <option value="Emamectin benzoate">Emamectin benzoate</option>
-          <option value="Neem oil spray">Neem oil spray (organic)</option>
-          <option value="Not applied">Not applied</option>
-          <option value="Other">Other (fill in notes)</option>
+          <option value="Neem oil spray">Neem oil · नीम तेल (जैविक)</option>
+          <option value="Not applied">Not applied · नहीं डाला</option>
+          <option value="Other">Other · अन्य</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Fungicide</label>
+        <label>Fungicide · फफूंदनाशी</label>
         <select id="z-fungicide">
-          <option value="">— Select —</option>
+          <option value="">— Select / चुनें —</option>
           <option value="Mancozeb (Dithane M-45)">Mancozeb / Dithane M-45</option>
           <option value="Carbendazim + Mancozeb">Carbendazim + Mancozeb</option>
           <option value="Hexaconazole">Hexaconazole</option>
           <option value="Propiconazole (Tilt)">Propiconazole / Tilt</option>
           <option value="Metalaxyl + Mancozeb">Metalaxyl + Mancozeb (Ridomil)</option>
           <option value="Trifloxystrobin">Trifloxystrobin (Nativo)</option>
-          <option value="Not applied">Not applied</option>
-          <option value="Other">Other (fill in notes)</option>
+          <option value="Not applied">Not applied · नहीं डाला</option>
+          <option value="Other">Other · अन्य</option>
         </select>
       </div>
       <div class="form-group">
-        <label>Previous Season Crop</label>
+        <label>Previous Season Crop · पिछली फसल</label>
         <select id="z-prev-crop">
-          <option value="">— Select —</option>
-          <option value="Soybean">Soybean</option>
-          <option value="Wheat">Wheat</option>
-          <option value="Chickpea">Chickpea</option>
-          <option value="Mustard">Mustard</option>
-          <option value="Maize">Maize</option>
-          <option value="Cotton">Cotton</option>
-          <option value="Fallow">Fallow (khali)</option>
-          <option value="Other">Other</option>
+          <option value="">— Select / चुनें —</option>
+          <option value="Soybean">Soybean · सोयाबीन</option>
+          <option value="Wheat">Wheat · गेहूँ</option>
+          <option value="Chickpea">Chickpea · चना</option>
+          <option value="Mustard">Mustard · सरसों</option>
+          <option value="Maize">Maize · मक्का</option>
+          <option value="Cotton">Cotton · कपास</option>
+          <option value="Fallow">Fallow · खाली / परती</option>
+          <option value="Other">Other · अन्य</option>
         </select>
       </div>
 
-      <!-- ── Notes ── -->
-      <div class="form-section-label">Notes</div>
+      <!-- ── Notes / टिप्पणी ── -->
+      <div class="form-section-label">Notes · टिप्पणी</div>
 
       <div class="form-group full">
-        <label>Additional Notes</label>
-        <textarea id="z-notes" placeholder="Any other observations — pest sighting, crop damage, flooding, yield estimate..."></textarea>
+        <label>Additional Notes · अन्य जानकारी</label>
+        <textarea id="z-notes" placeholder="Any observations · कोई भी जानकारी — pest sighting · कीट, crop damage · नुकसान, flooding · बाढ़, yield estimate · उपज अनुमान..."></textarea>
       </div>
 
     </div>
+    </div><!-- form-body -->
 
-    <div class="form-actions" style="margin-top:14px">
-      <button class="btn-cancel" onclick="cancelZone()">Cancel</button>
-      <button class="btn-save" onclick="saveZone()">Save Zone</button>
+    <div class="form-footer">
+      <button class="btn-cancel" onclick="cancelZone()">Cancel · रद्द करें</button>
+      <button class="btn-save" onclick="saveZone()">Save Zone · सेव करें</button>
     </div>
   </div>
 
@@ -578,11 +707,9 @@ textarea{{resize:vertical;min-height:60px}}
   <div id="sidebar">
     <div id="sb-head">
       <div class="farm-title">🛰️ {name}</div>
-      <div class="badge">{badge}</div>
-      <div class="meta">
-        📅 {date} &nbsp;·&nbsp; {crop} &nbsp;·&nbsp; {area_bigha} bigha total<br>
-        🕐 Updated {generated}
-      </div>
+      <div class="farm-subtitle">{crop} &nbsp;·&nbsp; {area_bigha} bigha &nbsp;·&nbsp; {date}</div>
+      <div class="badge"><span class="badge-dot"></span>{badge}</div>
+      <div class="meta">🕐 Updated {generated}</div>
     </div>
 
     <div id="sb-body">
@@ -598,38 +725,135 @@ textarea{{resize:vertical;min-height:60px}}
 
       <!-- Satellite -->
       <div class="sec">
-        <div class="sec-title">📡 Crop Health <span style="font-weight:400;text-transform:none;letter-spacing:0">(from satellite)</span></div>
-        <div class="mrow"><span class="ml">NDVI — Crop Greenness<span class="plain">0 = bare soil · 1 = dense crop</span></span><div class="mr">{_bar_html(max(0,ndvi_mean),0.8)}<b>{ndvi_mean}</b></div></div>
-        <div class="mrow"><span class="ml">NDRE — Early Warning<span class="plain">catches stress 2–3 weeks before it shows</span></span><div class="mr">{_bar_html(max(0,ndre_mean),0.8)}<b>{ndre_mean}</b>{"<span class='tag orange'>Early stress</span>" if stats.get("ndre_stress") else ""}</div></div>
-        <div class="mrow"><span class="ml">LSWI — Leaf Water<span class="plain">water inside the leaves — low = drought</span></span><div class="mr">{_bar_html(max(0,lswi_mean+0.5),1.0)}<b>{lswi_mean}</b>{"<span class='tag red'>Drought stress</span>" if lswi_mean<0 else ""}</div></div>
-        <div class="mrow"><span class="ml">EVI — Canopy Thickness<span class="plain">how full and dense the crop is</span></span><div class="mr">{_bar_html(max(0,evi_mean),0.8)}<b>{evi_mean}</b></div></div>
-        <div class="mrow"><span class="ml">Stress Area<span class="plain">% of field with unhealthy readings</span></span><div class="mr">{_bar_html(stress_pct,100)}<b>{stress_pct}%</b>{"<span class='tag red'>High</span>" if stress_pct>30 else ("<span class='tag orange'>Moderate</span>" if stress_pct>10 else "<span class='tag green'>Low</span>")}</div></div>
-        <div class="mrow"><span class="ml">vs Last Year<span class="plain">same 10-day window in 2025</span></span><span class="mr">{yoy}</span></div>
-        <div class="mrow"><span class="ml">Images used<span class="plain">more = more accurate</span></span><span class="mr">{stats.get("image_count","?")} imgs · {stats.get("cloud_pct","?")}% cloud</span></div>
+        <div class="sec-title"><span class="sec-title-icon">📡</span> फसल की स्थिति · Crop Status</div>
+        <div class="metric-grid" style="grid-template-columns:1fr 1fr 1fr">
+
+          <div class="metric-card">
+            <div class="mc-label">फसल स्वास्थ्य<br>Crop Health</div>
+            <div class="mc-value" style="color:{crop_health_color}">{crop_health_display}</div>
+            <div class="mc-bar"><div class="mc-bar-fill" style="width:{crop_health_pct}%;background:{crop_health_color}"></div></div>
+            <div class="mc-sub" style="margin-top:4px">{crop_health_stage}</div>
+            {early_warn_html}
+          </div>
+
+          <div class="metric-card">
+            <div class="mc-label">पानी की स्थिति<br>Water Stress</div>
+            <div class="mc-value" style="color:{water_color}">{water_val}</div>
+            <div class="mc-bar"><div class="mc-bar-fill" style="width:{water_bar_pct}%;background:{water_color}"></div></div>
+            <div class="mc-sub" style="margin-top:4px">{water_sub}</div>
+          </div>
+
+          <div class="metric-card">
+            <div class="mc-label">कमज़ोर क्षेत्र<br>Stressed Area</div>
+            <div class="mc-value" style="color:{stress_color}">{stress_pct}%</div>
+            <div class="mc-bar"><div class="mc-bar-fill" style="width:{min(100,stress_pct):.0f}%;background:{stress_color}"></div></div>
+            <div class="mc-sub" style="margin-top:4px">{stress_sub}</div>
+          </div>
+
+        </div>
+        <div class="mrow"><span class="ml">पिछले साल से · vs Last Year<span class="plain">same 10-day window last year</span></span><span class="mr">{yoy}</span></div>
+        <div class="mrow"><span class="ml">उपग्रह चित्र · Images used<span class="plain">more = more accurate</span></span><span class="mr">{stats.get("image_count","?")} imgs · {stats.get("cloud_pct","?")}% cloud</span></div>
+
+        <!-- Stage reference table -->
+        <div class="stage-table">
+          <div class="stage-title">फसल अवस्था गाइड · Crop Stage Guide</div>
+          <div class="stage-row {"stage-row-active" if crop_health_no_crop else ""}">
+            <span class="stage-dot" style="background:#888"></span>
+            <span class="stage-range">—</span>
+            <span class="stage-name">नंगी ज़मीन · No crop</span>
+          </div>
+          <div class="stage-row {"stage-row-active" if 15<=crop_health_pct<45 else ""}">
+            <span class="stage-dot" style="background:#e53935"></span>
+            <span class="stage-range">1–44%</span>
+            <span class="stage-name">शुरुआती बढ़त · Early growth</span>
+          </div>
+          <div class="stage-row {"stage-row-active" if 45<=crop_health_pct<65 else ""}">
+            <span class="stage-dot" style="background:#fdd835"></span>
+            <span class="stage-range">45–64%</span>
+            <span class="stage-name">अच्छी बढ़त · Growing well</span>
+          </div>
+          <div class="stage-row {"stage-row-active" if 65<=crop_health_pct<85 else ""}">
+            <span class="stage-dot" style="background:#66bb6a"></span>
+            <span class="stage-range">65–84%</span>
+            <span class="stage-name">पूरी बढ़त · Peak growth</span>
+          </div>
+          <div class="stage-row {"stage-row-active" if crop_health_pct>=85 else ""}">
+            <span class="stage-dot" style="background:#1a9850"></span>
+            <span class="stage-range">85–100%</span>
+            <span class="stage-name">घनी फसल · Dense crop</span>
+          </div>
+        </div>
       </div>
 
       <!-- Weather -->
       <div class="sec">
-        <div class="sec-title">🌤️ Current Weather</div>
-        <div class="mrow"><span class="ml">Temperature<span class="plain">above 38°C damages soybean flowers</span></span><span class="mr"><b>{temp_c}°C</b> <span style="color:#8890a8;font-size:0.85em">feels {feels}°C</span>{"<span class='tag red'>Heat stress</span>" if (w.get("temp_c") or 0)>38 else ""}</span></div>
-        <div class="mrow"><span class="ml">Humidity<span class="plain">low = faster drying</span></span><div class="mr">{_bar_html(w.get("humidity_pct",0),100)}<b>{hum}%</b></div></div>
-        <div class="mrow"><span class="ml">Wind<span class="plain">strong wind can lodge standing crop</span></span><span class="mr"><b>{wind} km/h</b> {wind_dir} <span style="color:#8890a8;font-size:0.85em">gusts {gusts}</span></span></div>
-        <div class="mrow"><span class="ml">Cloud cover</span><div class="mr">{_bar_html(w.get("cloud_cover_pct",0),100)}<b>{cloud}%</b></div></div>
+        <div class="sec-title"><span class="sec-title-icon">🌤️</span> Current Weather</div>
+        <div class="wx-grid">
+          <div class="wx-tile">
+            <div class="wx-icon">🌡️</div>
+            <div class="wx-val">{temp_c}°C</div>
+            <div class="wx-lbl">Temp (feels {feels}°C){"<br><span class='tag red' style='margin-top:3px;display:inline-block'>Heat stress</span>" if (w.get("temp_c") or 0)>38 else ""}</div>
+          </div>
+          <div class="wx-tile">
+            <div class="wx-icon">💧</div>
+            <div class="wx-val">{hum}%</div>
+            <div class="wx-lbl">Humidity</div>
+          </div>
+          <div class="wx-tile">
+            <div class="wx-icon">🌧️</div>
+            <div class="wx-val">{rain_now} mm</div>
+            <div class="wx-lbl">Rain today ({rain_ch}%)</div>
+          </div>
+          <div class="wx-tile">
+            <div class="wx-icon">💨</div>
+            <div class="wx-val">{wind}</div>
+            <div class="wx-lbl">Wind km/h {wind_dir}</div>
+          </div>
+          <div class="wx-tile">
+            <div class="wx-icon">☁️</div>
+            <div class="wx-val">{cloud}%</div>
+            <div class="wx-lbl">Cloud cover</div>
+          </div>
+          <div class="wx-tile">
+            <div class="wx-icon">🌦️</div>
+            <div class="wx-val">{rain_7d} mm</div>
+            <div class="wx-lbl">Last 7 days{"<br><span class='tag red' style='margin-top:3px;display:inline-block'>Low</span>" if (w.get("rain_7d_mm") or 99)<10 else ""}</div>
+          </div>
+        </div>
         {vpd_html}
-        <div class="mrow"><span class="ml">Rain today<span class="plain">actual rainfall</span></span><span class="mr"><b>{rain_now} mm</b> <span style="color:#8890a8;font-size:0.85em">{rain_ch}% chance</span></span></div>
-        <div class="mrow"><span class="ml">Rain this week<span class="plain">last 7 days total</span></span><span class="mr"><b>{rain_7d} mm</b>{"<span class='tag red'>Drought risk</span>" if (w.get("rain_7d_mm") or 99)<10 else ""}</span></div>
         {et0_html}
       </div>
 
       <!-- Soil -->
       <div class="sec">
-        <div class="sec-title">🌍 Soil</div>
-        {soil_html or "<div style='color:#8890a8;font-size:0.83em;padding:8px 0'>No soil data</div>"}
+        <div class="sec-title"><span class="sec-title-icon">🌍</span> Soil</div>
+        {soil_html or "<div class='empty-state'>No soil data available</div>"}
+      </div>
+
+      <!-- Growth Curve -->
+      <div class="sec">
+        <div class="sec-title"><span class="sec-title-icon">📈</span> फसल की वृद्धि · Crop Growth</div>
+        {"<div class='chart-wrap'><canvas id='growth-chart'></canvas><div class='chart-note'>" + str(len(timeseries)) + " satellite images since sowing</div></div>" if timeseries else "<div class='chart-empty'>📡 No growth data yet<br><span style='font-size:0.85em'>Run monitor.py after sowing date is set</span></div>"}
+      </div>
+
+      <!-- Spray Advisory -->
+      <div class="sec">
+        <div class="sec-title"><span class="sec-title-icon">🌿</span> Spray Advisory · छिड़काव सलाह</div>
+        <div style="background:#141824;border:1px solid #1e2235;border-radius:10px;padding:12px">
+          <div class="spray-score-ring">
+            <div class="spray-ring-num" style="color:{spray_color}">{spray_score}</div>
+            <div>
+              <div class="spray-ring-label" style="color:{spray_color}">{spray_label}</div>
+              <div style="font-size:0.72em;color:#4a5270;margin-top:2px">Score out of 100 · आज का छिड़काव स्कोर</div>
+            </div>
+          </div>
+          {spray_reasons_html}
+        </div>
       </div>
 
       <!-- Forecast -->
       <div class="sec">
-        <div class="sec-title">📅 7-Day Forecast</div>
+        <div class="sec-title"><span class="sec-title-icon">📅</span> 7-Day Forecast</div>
         <table class="fc-table">
           <tr><th>Day</th><th>Max</th><th>Rain</th><th>Chance</th></tr>
           {forecast_rows}
@@ -650,6 +874,171 @@ L.tileLayer('https://mt{{s}}.google.com/vt/lyrs=s&x={{x}}&y={{y}}&z={{z}}', {{
 L.tileLayer('https://mt{{s}}.google.com/vt/lyrs=h&x={{x}}&y={{y}}&z={{z}}', {{
   subdomains:'0123', attribution:'', maxZoom:21, maxNativeZoom:21, opacity:0.8
 }}).addTo(map);
+
+// ── Crop growth curve (farmer-friendly single line) ───────────────────────
+(function() {{
+  const ts = {ts_json};
+  if (!ts || !ts.length) return;
+  const ctx = document.getElementById('growth-chart');
+  if (!ctx) return;
+
+  // Convert NDVI (0–0.8) to a plain 0–100 "crop health %" farmers understand
+  // 0.0 = 0% (bare soil), 0.8 = 100% (peak dense crop)
+  const labels      = ts.map(d => {{
+    const dt = new Date(d.date);
+    return dt.toLocaleDateString('en-IN', {{day:'numeric', month:'short'}});
+  }});
+  const healthPct   = ts.map(d => Math.round(Math.max(0, d.ndvi / 0.8) * 100));
+  const pointColors = ts.map(d => {{
+    const h = Math.round(Math.max(0, d.ndvi / 0.8) * 100);
+    // red → orange → yellow → green depending on health
+    if (h < 25) return '#ef5350';
+    if (h < 45) return '#ffa726';
+    if (h < 65) return '#fdd835';
+    return '#66bb6a';
+  }});
+  // Fade points that were taken through clouds
+  const pointOpacity = ts.map(d => Math.max(0.35, 1 - (d.cloud_pct || 0) / 80));
+  const pointBg = pointColors.map((c, i) => {{
+    const hex = c.replace('#','');
+    const r = parseInt(hex.substring(0,2),16);
+    const g = parseInt(hex.substring(2,4),16);
+    const b = parseInt(hex.substring(4,6),16);
+    return `rgba(${{r}},${{g}},${{b}},${{pointOpacity[i]}})`;
+  }});
+
+  // Stage boundary lines (days after sowing → chart x-index)
+  // We'll draw as vertical annotation-like background bands using a plugin-free approach
+  const sowingStr = '{farm.get("sowing_date","") or ""}';
+  const sowingMs  = sowingStr ? new Date(sowingStr).getTime() : null;
+
+  // Stage labels to show at the top of the chart via custom plugin
+  const STAGES = [
+    {{upTo: 21,  label: 'Germination · अंकुरण',    color: '#4fc3f720'}},
+    {{upTo: 35,  label: 'Vegetative · बढ़वार',       color: '#66bb6a18'}},
+    {{upTo: 55,  label: 'Flowering · फूल',           color: '#fdd83518'}},
+    {{upTo: 80,  label: 'Pod fill · दाना भराई',      color: '#ffa72618'}},
+    {{upTo: 9999,label: 'Maturity · पकाव',           color: '#ab47bc18'}},
+  ];
+
+  // Compute day-since-sowing for each point so we can annotate stage
+  function stageName(ndvi) {{
+    const h = Math.round(Math.max(0, ndvi / 0.8) * 100);
+    if (h < 10)  return 'Bare soil · नंगी ज़मीन';
+    if (h < 30)  return 'Early growth · शुरुआती बढ़त';
+    if (h < 55)  return 'Growing well · अच्छी बढ़त';
+    if (h < 75)  return 'Peak growth · पूरी बढ़त';
+    return 'Dense crop · घनी फसल';
+  }}
+
+  Chart.defaults.color      = '#4a5270';
+  Chart.defaults.borderColor = '#1e2235';
+
+  new Chart(ctx, {{
+    type: 'line',
+    data: {{
+      labels,
+      datasets: [{{
+        label: 'Crop Health',
+        data: healthPct,
+        borderColor: '#66bb6a',
+        borderWidth: 2.5,
+        tension: 0.4,
+        fill: true,
+        backgroundColor: (context) => {{
+          const chart = context.chart;
+          const {{ctx: c, chartArea}} = chart;
+          if (!chartArea) return 'transparent';
+          const gradient = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+          gradient.addColorStop(0,   'rgba(102,187,106,0.35)');
+          gradient.addColorStop(0.6, 'rgba(102,187,106,0.08)');
+          gradient.addColorStop(1,   'rgba(102,187,106,0.01)');
+          return gradient;
+        }},
+        pointBackgroundColor: pointBg,
+        pointBorderColor:     '#0a0c14',
+        pointBorderWidth:     1.5,
+        pointRadius:          5,
+        pointHoverRadius:     7,
+      }}],
+    }},
+    options: {{
+      responsive:true,
+      maintainAspectRatio:true,
+      animation:{{duration:700}},
+      plugins: {{
+        legend: {{display:false}},
+        tooltip: {{
+          backgroundColor: '#141824',
+          borderColor:     '#252836',
+          borderWidth:     1,
+          titleColor:      '#e2e8f0',
+          titleFont:       {{weight:'700', size:13}},
+          bodyColor:       '#8890a8',
+          padding:         10,
+          callbacks: {{
+            title: (items) => `${{items[0].label}}`,
+            label: (item) => {{
+              const i   = item.dataIndex;
+              const h   = item.raw;
+              const sn  = stageName(ts[i].ndvi);
+              const cl  = ts[i].cloud_pct > 30 ? ` (cloudy ${{ts[i].cloud_pct}}%)` : '';
+              return [`Crop health: ${{h}}%${{cl}}`, sn];
+            }},
+          }},
+        }},
+      }},
+      scales: {{
+        x: {{
+          ticks: {{maxTicksLimit:5, maxRotation:0, font:{{size:10}}}},
+          grid:  {{color:'#1a1d2a'}},
+        }},
+        y: {{
+          min:0, max:100,
+          ticks: {{
+            stepSize:25,
+            font:{{size:10}},
+            callback: (v) => v + '%',
+          }},
+          grid: {{color:'#1a1d2a'}},
+        }},
+      }},
+    }},
+  }});
+}})();
+
+// ── NDVI heatmap overlay ──────────────────────────────────────────────────
+const HEATMAP_URL = '{heatmap_url}';
+let heatmapLayer = null;
+let heatmapOn    = false;
+
+function toggleHeatmap() {{
+  const btn = document.getElementById('btn-heatmap');
+  const leg = document.getElementById('heatmap-legend');
+  if (!HEATMAP_URL) {{
+    btn.classList.add('unavail');
+    btn.title = 'Run monitor.py to generate heatmap';
+    return;
+  }}
+  heatmapOn = !heatmapOn;
+  if (heatmapOn) {{
+    if (!heatmapLayer) {{
+      // EE thumbnail is a static image — overlay it as an image layer over farm bounds
+      const bounds = farmLayer.getBounds();
+      heatmapLayer = L.imageOverlay(HEATMAP_URL, bounds, {{
+        opacity: 0.75, interactive: false,
+      }}).addTo(map);
+    }}
+    btn.classList.add('active');
+    leg.classList.add('show');
+  }} else {{
+    if (heatmapLayer) {{ map.removeLayer(heatmapLayer); heatmapLayer = null; }}
+    btn.classList.remove('active');
+    leg.classList.remove('show');
+  }}
+}}
+// Grey out button if no URL available
+if (!HEATMAP_URL) document.getElementById('btn-heatmap').classList.add('unavail');
 
 // ── Farm plots ────────────────────────────────────────────────────────────
 const farmData = {geojson};
@@ -682,6 +1071,7 @@ let zones = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
 let zoneLayers = {{}};
 let editingZoneId = null;
 let pendingGeojson = null;
+let pendingLayer  = null;   // highlighted layer shown while form is open
 let selected = {{id:'all', type:'all'}};
 let currentMode = 'click';   // 'click' | 'grid'
 let gridLayer = null;         // L.LayerGroup holding current grid cells
@@ -1018,14 +1408,146 @@ farmLayer.eachLayer(layer => {{
   }});
 }});
 
+// ── Irrigation event rows ─────────────────────────────────────────────────
+const IRR_METHODS = ['','Flood · बाढ़','Drip · टपक','Sprinkler · फव्वारा','Canal · नहर','Borewell · ट्यूबवेल','Open well · कुआँ','Farm pond · तालाब','Rain-fed · बारानी'];
+const IRR_SOURCES = ['','Borewell · ट्यूबवेल','Canal · नहर','River / Nala · नदी','Farm pond · तालाब','Open well · कुआँ','Tanker · टैंकर','Rain · वर्षा जल'];
+
+function irrMethodOpts(sel) {{
+  return IRR_METHODS.map(m => `<option value="${{m}}"${{m===sel?' selected':''}}>${{m||'— Method / विधि —'}}</option>`).join('');
+}}
+function irrSourceOpts(sel) {{
+  return IRR_SOURCES.map(s => `<option value="${{s}}"${{s===sel?' selected':''}}>${{s||'— Source / स्रोत —'}}</option>`).join('');
+}}
+
+function addIrrRow(ev={{}}) {{
+  const list = document.getElementById('irr-list');
+  const idx  = list.children.length;
+  const ordinal = ['1st पहला','2nd दूसरा','3rd तीसरा','4th चौथा','5th पाँचवाँ','6th छठा','7th सातवाँ','8th आठवाँ'][idx] || `${{idx+1}}th`;
+  const div = document.createElement('div');
+  div.className = 'irr-row';
+  div.innerHTML = `
+    <span class="irr-row-num">${{ordinal}} water · पानी</span>
+    <button type="button" class="irr-row-del" onclick="removeIrrRow(this)" title="Remove">✕</button>
+    <div class="irr-row-top">
+      <div class="form-group">
+        <label>Date · तारीख</label>
+        <input type="date" class="irr-date" value="${{ev.date||''}}" onchange="updateIrrSummary()">
+      </div>
+      <div class="form-group">
+        <label>Area (bigha) · क्षेत्र (बीघा)</label>
+        <input type="number" class="irr-bigha" min="0" step="0.1" placeholder="e.g. 25" value="${{ev.bigha||''}}" oninput="updateIrrSummary()">
+      </div>
+    </div>
+    <div class="irr-row-bot">
+      <div class="form-group">
+        <label>Method · विधि</label>
+        <select class="irr-method" onchange="updateIrrSummary()">${{irrMethodOpts(ev.method||'')}}</select>
+      </div>
+      <div class="form-group">
+        <label>Source · स्रोत</label>
+        <select class="irr-source">${{irrSourceOpts(ev.source||'')}}</select>
+      </div>
+    </div>`;
+  list.appendChild(div);
+  updateIrrSummary();
+}}
+
+function removeIrrRow(btn) {{
+  btn.closest('.irr-row').remove();
+  // Re-label ordinals
+  const list = document.getElementById('irr-list');
+  const labels = ['1st पहला','2nd दूसरा','3rd तीसरा','4th चौथा','5th पाँचवाँ','6th छठा','7th सातवाँ','8th आठवाँ'];
+  Array.from(list.children).forEach((row, i) => {{
+    row.querySelector('.irr-row-num').textContent = (labels[i]||`${{i+1}}th`) + ' water · पानी';
+  }});
+  updateIrrSummary();
+}}
+
+function updateIrrSummary() {{
+  const list    = document.getElementById('irr-list');
+  const summary = document.getElementById('irr-summary');
+  const rows    = Array.from(list.querySelectorAll('.irr-row'));
+  if (!rows.length) {{ summary.style.display = 'none'; return; }}
+
+  // Zone area for overlap calc — read from form title which has bigha, fall back to pendingGeojson
+  let zoneBigha = null;
+  const titleEl = document.getElementById('form-title-text');
+  const m = titleEl ? titleEl.textContent.match(/([0-9.]+) *bigha/) : null;
+  if (m) zoneBigha = parseFloat(m[1]);
+  else if (pendingGeojson) {{
+    const coords = pendingGeojson.coordinates[0].map(c=>[c[0],c[1]]);
+    zoneBigha = calcAreaSqm(coords) / 1333.33;
+  }} else if (editingZoneId) {{
+    const z = zones.find(x=>x.id===editingZoneId);
+    if (z) zoneBigha = z.area_bigha || null;
+  }}
+
+  const events = rows.map(r => ({{
+    date:   r.querySelector('.irr-date').value,
+    bigha:  parseFloat(r.querySelector('.irr-bigha').value) || 0,
+    method: r.querySelector('.irr-method').value,
+  }})).filter(e => e.date || e.bigha);
+
+  const totalBigha = events.reduce((s,e) => s+e.bigha, 0);
+  const count      = events.length;
+  const lastDate   = events.filter(e=>e.date).map(e=>e.date).sort().pop() || '—';
+
+  let overlapBigha = 0;
+  if (zoneBigha && totalBigha > zoneBigha) {{
+    overlapBigha = Math.round((totalBigha - zoneBigha) * 10) / 10;
+  }}
+
+  let html = `<span class="irr-sum-chip blue">💧 ${{count}} event${{count!==1?'s':''}}</span>`;
+  html    += `<span class="irr-sum-chip blue">${{Math.round(totalBigha*10)/10}} bigha total irrigated</span>`;
+  if (lastDate !== '—') html += `<span class="irr-sum-chip green">Last: ${{lastDate}}</span>`;
+  if (overlapBigha > 0) {{
+    html += `<span class="irr-sum-chip orange">⚠ ~${{overlapBigha}} bigha re-irrigated (overlap)</span>`;
+  }} else if (zoneBigha && totalBigha > 0 && totalBigha < zoneBigha) {{
+    const pct = Math.round(totalBigha/zoneBigha*100);
+    html += `<span class="irr-sum-chip${{pct<50?' red':' green'}}">${{pct}}% of zone covered</span>`;
+  }}
+
+  summary.innerHTML = html;
+  summary.style.display = 'flex';
+}}
+
+function getIrrEvents() {{
+  return Array.from(document.querySelectorAll('#irr-list .irr-row')).map(r => ({{
+    date:   r.querySelector('.irr-date').value,
+    bigha:  parseFloat(r.querySelector('.irr-bigha').value) || 0,
+    method: r.querySelector('.irr-method').value,
+    source: r.querySelector('.irr-source').value,
+  }})).filter(e => e.date || e.bigha || e.method);
+}}
+
+function loadIrrEvents(events) {{
+  document.getElementById('irr-list').innerHTML = '';
+  (events||[]).forEach(ev => addIrrRow(ev));
+  // backward-compat: single legacy fields
+  updateIrrSummary();
+}}
+
+// ── Pending-zone highlight ────────────────────────────────────────────────
+function clearPendingLayer() {{
+  if (pendingLayer) {{ map.removeLayer(pendingLayer); pendingLayer = null; }}
+}}
+
+function showPendingLayer(geo) {{
+  clearPendingLayer();
+  if (!geo) return;
+  pendingLayer = L.geoJSON(geo, {{
+    style: {{ color:'#ffd600', weight:3, fillColor:'#ffd600', fillOpacity:0.25, dashArray:'6 3' }},
+  }}).addTo(map);
+}}
+
 // ── Zone form ─────────────────────────────────────────────────────────────
 function openZoneForm(zoneId, preSqm, preName) {{
   editingZoneId = zoneId;
 
-  const FIELD_IDS = ['z-name','z-khasra','z-land-type','z-soil','z-crop','z-variety','z-sowing','z-seed-rate','z-seed-treat','z-irr-method','z-water-source','z-irrigation','z-irr-freq','z-fert-base','z-fert-top','z-herbicide','z-pesticide','z-fungicide','z-prev-crop','z-notes'];
+  const FIELD_IDS = ['z-name','z-khasra','z-land-type','z-soil','z-crop','z-variety','z-sowing','z-seed-rate','z-seed-treat','z-fert-base','z-fert-top','z-herbicide','z-pesticide','z-fungicide','z-prev-crop','z-notes'];
   if (zoneId) {{
     const z = zones.find(x => x.id === zoneId);
-    document.getElementById('form-title-text').textContent = '✏️ Edit Zone';
+    document.getElementById('form-title-text').textContent = '✏️ Edit Zone · बदलाव करें';
     FIELD_IDS.forEach(id => {{
       const el = document.getElementById(id); if(el) el.value = '';
     }});
@@ -1038,10 +1560,6 @@ function openZoneForm(zoneId, preSqm, preName) {{
     document.getElementById('z-sowing').value     = z.sowing_date || '';
     document.getElementById('z-seed-rate').value  = z.seed_rate || '';
     document.getElementById('z-seed-treat').value = z.seed_treatment || '';
-    document.getElementById('z-irr-method').value = z.irrigation_method || '';
-    document.getElementById('z-water-source').value = z.water_source || '';
-    document.getElementById('z-irrigation').value = z.irrigation_date || '';
-    document.getElementById('z-irr-freq').value   = z.irrigation_freq || '';
     document.getElementById('z-fert-base').value  = z.fertiliser_base || '';
     document.getElementById('z-fert-top').value   = z.fertiliser_top || '';
     document.getElementById('z-herbicide').value  = z.herbicide || '';
@@ -1049,6 +1567,11 @@ function openZoneForm(zoneId, preSqm, preName) {{
     document.getElementById('z-fungicide').value  = z.fungicide || '';
     document.getElementById('z-prev-crop').value  = z.prev_crop || '';
     document.getElementById('z-notes').value      = z.notes || '';
+    // Load irrigation events (with backward-compat for old single-field format)
+    const legacyEvt = z.irrigation_date
+      ? [{{date: z.irrigation_date, bigha: z.area_bigha||0, method: z.irrigation_method||'', source: z.water_source||''}}]
+      : [];
+    loadIrrEvents(z.irrigation_events && z.irrigation_events.length ? z.irrigation_events : legacyEvt);
   }} else {{
     document.getElementById('form-title-text').textContent = preSqm
       ? `📌 Add Zone — ${{Math.round(preSqm/1333.33*10)/10}} bigha (${{Math.round(preSqm).toLocaleString()}} m²)`
@@ -1057,12 +1580,21 @@ function openZoneForm(zoneId, preSqm, preName) {{
       const el = document.getElementById(id); if(el) el.value='';
     }});
     document.getElementById('z-name').value = preName || '';
+    loadIrrEvents([]);
+  }}
+  // Highlight the area being filled in
+  if (zoneId) {{
+    const z = zones.find(x => x.id === zoneId);
+    if (z) showPendingLayer(z.geojson);
+  }} else {{
+    showPendingLayer(pendingGeojson);
   }}
   document.getElementById('zone-overlay').classList.add('show');
 }}
 
 function cancelZone() {{
   document.getElementById('zone-overlay').classList.remove('show');
+  clearPendingLayer();
   pendingGeojson = null;
   editingZoneId = null;
   drawReset();
@@ -1074,27 +1606,27 @@ function saveZone() {{
   const name = document.getElementById('z-name').value.trim();
   if (!name) {{ alert('Please enter a zone name'); return; }}
 
+  const irrEvents = getIrrEvents();
+  const lastIrr   = irrEvents.filter(e=>e.date).map(e=>e.date).sort().pop() || null;
   const zoneData = {{
     name,
-    khasra:            document.getElementById('z-khasra').value,
-    land_type:         document.getElementById('z-land-type').value,
-    soil_type:         document.getElementById('z-soil').value,
-    crop:              document.getElementById('z-crop').value,
-    variety:           document.getElementById('z-variety').value,
-    sowing_date:       document.getElementById('z-sowing').value,
-    seed_rate:         document.getElementById('z-seed-rate').value,
-    seed_treatment:    document.getElementById('z-seed-treat').value,
-    irrigation_method: document.getElementById('z-irr-method').value,
-    water_source:      document.getElementById('z-water-source').value,
-    irrigation_date:   document.getElementById('z-irrigation').value,
-    irrigation_freq:   document.getElementById('z-irr-freq').value,
-    fertiliser_base:   document.getElementById('z-fert-base').value,
-    fertiliser_top:    document.getElementById('z-fert-top').value,
-    herbicide:         document.getElementById('z-herbicide').value,
-    pesticide:         document.getElementById('z-pesticide').value,
-    fungicide:         document.getElementById('z-fungicide').value,
-    prev_crop:         document.getElementById('z-prev-crop').value,
-    notes:             document.getElementById('z-notes').value,
+    khasra:             document.getElementById('z-khasra').value,
+    land_type:          document.getElementById('z-land-type').value,
+    soil_type:          document.getElementById('z-soil').value,
+    crop:               document.getElementById('z-crop').value,
+    variety:            document.getElementById('z-variety').value,
+    sowing_date:        document.getElementById('z-sowing').value,
+    seed_rate:          document.getElementById('z-seed-rate').value,
+    seed_treatment:     document.getElementById('z-seed-treat').value,
+    irrigation_events:  irrEvents,
+    irrigation_date:    lastIrr,   // keep for backward-compat display
+    fertiliser_base:    document.getElementById('z-fert-base').value,
+    fertiliser_top:     document.getElementById('z-fert-top').value,
+    herbicide:          document.getElementById('z-herbicide').value,
+    pesticide:          document.getElementById('z-pesticide').value,
+    fungicide:          document.getElementById('z-fungicide').value,
+    prev_crop:          document.getElementById('z-prev-crop').value,
+    notes:              document.getElementById('z-notes').value,
   }};
 
   if (editingZoneId) {{
@@ -1117,6 +1649,7 @@ function saveZone() {{
 
   localStorage.setItem(STORAGE_KEY, JSON.stringify(zones));
   document.getElementById('zone-overlay').classList.remove('show');
+  clearPendingLayer();
   renderZones();
   if (editingZoneId) showZoneDetail(editingZoneId);
   editingZoneId = null;
@@ -1190,7 +1723,42 @@ function showZoneDetail(id) {{
   const days = z.sowing_date ? Math.floor((Date.now()-new Date(z.sowing_date))/86400000) : null;
   const stage = days===null ? '—' : days<0 ? `Sowing in ${{Math.abs(days)}} days` : days<21 ? `Germination (Day ${{days}})` : days<35 ? `Vegetative (Day ${{days}})` : days<55 ? `Flowering (Day ${{days}})` : days<80 ? `Pod fill (Day ${{days}})` : `Maturity (Day ${{days}})`;
 
-  const irrLine = [z.irrigation_date, z.irrigation_method, z.water_source].filter(Boolean).join(' · ') || '—';
+  // Build irrigation timeline
+  const events = z.irrigation_events && z.irrigation_events.length
+    ? z.irrigation_events
+    : (z.irrigation_date ? [{{date:z.irrigation_date, bigha:z.area_bigha||0, method:z.irrigation_method||'', source:z.water_source||''}}] : []);
+  const totalIrrBigha = events.reduce((s,e)=>s+(e.bigha||0), 0);
+  const overlapBigha  = z.area_bigha && totalIrrBigha > z.area_bigha
+    ? Math.round((totalIrrBigha - z.area_bigha)*10)/10 : 0;
+
+  let irrHtml = '';
+  if (events.length) {{
+    irrHtml += `<div class="zone-kv" style="flex-direction:column;align-items:flex-start;gap:6px">
+      <span class="zone-k">💧 Irrigation history · सिंचाई रिकॉर्ड</span>
+      <div class="irr-timeline">`;
+    events.forEach((ev, i) => {{
+      const isOverlap = i > 0 && z.area_bigha && ev.bigha > 0;
+      irrHtml += `<div class="irr-tl-row">
+        <div class="irr-tl-dot${{isOverlap?' overlap':''}}"></div>
+        <div class="irr-tl-body">
+          <div class="irr-tl-date">${{ev.date||'Date unknown'}} &nbsp;·&nbsp; ${{ev.bigha||'?'}} bigha</div>
+          <div class="irr-tl-meta">${{[ev.method,ev.source].filter(Boolean).join(' · ')||'Method not recorded'}}</div>
+        </div>
+      </div>`;
+    }});
+    irrHtml += `</div>`;
+    if (totalIrrBigha > 0) {{
+      irrHtml += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
+        <span class="irr-sum-chip blue" style="font-size:0.75em">Total: ${{Math.round(totalIrrBigha*10)/10}} bigha</span>`;
+      if (overlapBigha > 0) {{
+        irrHtml += `<span class="irr-sum-chip orange" style="font-size:0.75em">⚠ ~${{overlapBigha}} bigha overlap</span>`;
+      }}
+      irrHtml += `</div>`;
+    }}
+    irrHtml += `</div>`;
+  }} else {{
+    irrHtml = kv('Irrigation · सिंचाई', '—');
+  }}
 
   const rows =
     kv('Area',             `${{z.area_bigha||'?'}} bigha (${{(z.area_sqm||0).toLocaleString()}} m²)`) +
@@ -1205,8 +1773,7 @@ function showZoneDetail(id) {{
     kv('Seed rate',        z.seed_rate) +
     kv('Seed treatment',   z.seed_treatment) +
     `<div style="height:4px"></div>` +
-    `<div class="zone-kv"><span class="zone-k">Last irrigation</span><span class="zone-v"><span class="irr-badge">💧 ${{irrLine}}</span></span></div>` +
-    kv('Irrigation freq',  z.irrigation_freq) +
+    irrHtml +
     `<div style="height:4px"></div>` +
     kv('Base fertiliser',  z.fertiliser_base) +
     kv('Top dressing',     z.fertiliser_top) +
@@ -1227,6 +1794,128 @@ function showZoneDetail(id) {{
 
   document.getElementById('sb-body').scrollTop = 0;
 }}
+
+// ── Current location ─────────────────────────────────────────────────────
+let locMarker  = null;
+let locCircle  = null;
+let locToastTimer = null;
+
+function showLocToast(msg, color, duration) {{
+  const t = document.getElementById('loc-toast');
+  t.textContent = msg;
+  t.style.borderColor = color || '#1e2130';
+  t.style.color       = color || '#e2e8f0';
+  t.style.display     = 'block';
+  clearTimeout(locToastTimer);
+  if (duration) locToastTimer = setTimeout(() => {{ t.style.display = 'none'; }}, duration);
+}}
+
+function locateMe() {{
+  const btn = document.getElementById('btn-locate');
+  if (!navigator.geolocation) {{
+    showLocToast('GPS not supported · GPS उपलब्ध नहीं', '#ef5350', 3000);
+    return;
+  }}
+  btn.classList.add('locating');
+  btn.textContent = '⟳';
+  showLocToast('Finding location… · लोकेशन खोज रहे हैं…', '#fdd835');
+
+  navigator.geolocation.getCurrentPosition(
+    pos => {{
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const acc = Math.round(pos.coords.accuracy);
+
+      btn.classList.remove('locating');
+      btn.classList.add('located');
+      btn.textContent = '📍';
+
+      // Remove previous marker/circle
+      if (locMarker) {{ map.removeLayer(locMarker); }}
+      if (locCircle) {{ map.removeLayer(locCircle); }}
+
+      // Accuracy circle
+      locCircle = L.circle([lat, lng], {{
+        radius: acc,
+        color: '#4fc3f7', weight: 1.5,
+        fillColor: '#4fc3f7', fillOpacity: 0.08,
+        dashArray: '4 4',
+      }}).addTo(map);
+
+      // Pulsing dot marker
+      locMarker = L.marker([lat, lng], {{
+        icon: L.divIcon({{
+          className: '',
+          html: `<div style="width:16px;height:16px;border-radius:50%;background:#4fc3f7;border:3px solid #fff;box-shadow:0 0 0 4px #4fc3f740;animation:pulse-dot 1.6s ease-in-out infinite"></div>`,
+          iconAnchor: [8, 8],
+        }})
+      }}).addTo(map);
+
+      locMarker.bindPopup(`
+        <div style="font-family:inherit;font-size:13px;color:#e2e8f0;background:#141824;padding:8px 12px;border-radius:8px;min-width:160px">
+          <b style="color:#4fc3f7">📍 You are here · आप यहाँ हैं</b><br>
+          <span style="color:#8890a8;font-size:0.85em">
+            ${{lat.toFixed(6)}}, ${{lng.toFixed(6)}}<br>
+            Accuracy · सटीकता: ±${{acc}} m
+          </span>
+        </div>
+      `, {{className:'loc-popup', maxWidth:220}}).openPopup();
+
+      map.flyTo([lat, lng], Math.max(map.getZoom(), 17), {{animate:true, duration:1.2}});
+      showLocToast(`±${{acc}} m accuracy · सटीकता`, '#66bb6a', 4000);
+    }},
+    err => {{
+      btn.classList.remove('locating');
+      btn.textContent = '📍';
+      const msgs = {{
+        1: 'Permission denied · अनुमति नहीं दी',
+        2: 'Position unavailable · स्थान अनुपलब्ध',
+        3: 'Timeout · समय समाप्त',
+      }};
+      showLocToast(msgs[err.code] || 'Location error', '#ef5350', 4000);
+    }},
+    {{ enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }}
+  );
+}}
+
+// ── Form panel drag-to-resize ─────────────────────────────────────────────
+(function() {{
+  const handle  = document.getElementById('form-resize-handle');
+  const overlay = document.getElementById('zone-overlay');
+  let dragging = false, startY = 0, startH = 0;
+
+  handle.addEventListener('mousedown', e => {{
+    dragging = true;
+    startY = e.clientY;
+    startH = overlay.offsetHeight;
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  }});
+  handle.addEventListener('touchstart', e => {{
+    dragging = true;
+    startY = e.touches[0].clientY;
+    startH = overlay.offsetHeight;
+    e.preventDefault();
+  }}, {{passive:false}});
+
+  function onMove(clientY) {{
+    if (!dragging) return;
+    const delta = startY - clientY;            // drag up = larger panel
+    const newH  = Math.min(window.innerHeight * 0.92, Math.max(160, startH + delta));
+    overlay.style.height = newH + 'px';
+  }}
+  document.addEventListener('mousemove', e => onMove(e.clientY));
+  document.addEventListener('touchmove', e => onMove(e.touches[0].clientY), {{passive:false}});
+
+  function onUp() {{
+    dragging = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }}
+  document.addEventListener('mouseup', onUp);
+  document.addEventListener('touchend', onUp);
+}})();
 </script>
 </body>
 </html>"""
