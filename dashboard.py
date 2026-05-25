@@ -150,6 +150,58 @@ def build_html(farm: dict, stats: dict) -> str:
     area_bigha    = stats.get("area_bigha", 0)
     stress_pct_val= stats.get("stress_pct", 0) or 0
 
+    # Crop calendar
+    cal         = stats.get("crop_calendar") or {}
+    cal_stages  = cal.get("stages", [])
+    cal_current = cal.get("current_stage") or {}
+    cal_tasks   = cal.get("today_tasks", [])
+    cal_upcoming= cal.get("upcoming", [])
+    cal_days    = cal.get("days_since_sowing")
+    cal_sowing  = cal.get("sowing_date", "—")
+
+    cal_tasks_html = "".join(
+        f'<div class="cal-task"><span class="cal-task-dot"></span>{t}</div>'
+        for t in cal_tasks
+    )
+    cal_upcoming_html = "".join(
+        f'<div class="cal-upcoming-row"><span class="cal-up-icon">{u["icon"]}</span>'
+        f'<span class="cal-up-name">{u["name"]} · {u["name_hi"]}</span>'
+        f'<span class="cal-up-when">{"in " + str(u["days_away"]) + "d"} · {u["date"]}</span></div>'
+        for u in cal_upcoming
+    )
+    cal_timeline_html = ""
+    for s in cal_stages:
+        cls = "cal-tl-current" if s["is_current"] else ("cal-tl-past" if s["is_past"] else "cal-tl-future")
+        cal_timeline_html += (
+            f'<div class="cal-tl-row {cls}">'
+            f'<span class="cal-tl-icon">{s["icon"]}</span>'
+            f'<span class="cal-tl-name">{s["name"]} · {s["name_hi"]}</span>'
+            f'<span class="cal-tl-date">{s["date_start"]}</span>'
+            f'</div>'
+        )
+    cal_current_name = f'{cal_current.get("icon","")} {cal_current.get("name","")} · {cal_current.get("name_hi","")}' if cal_current else "—"
+
+    # Disease risk forecast
+    disease_risk = stats.get("disease_risk") or []
+    disease_html = ""
+    for d in disease_risk:
+        fa = d.get("alerts", [])
+        alerts_html = "".join(f'<div class="dis-alert">{a}</div>' for a in fa[:2])
+        disease_html += (
+            f'<div class="dis-row">'
+            f'<div class="dis-date">{d["date_short"]}</div>'
+            f'<div class="dis-badge" style="background:{d["fungal_color"]}22;color:{d["fungal_color"]};border:1px solid {d["fungal_color"]}44">'
+            f'🍄 {d["fungal_label"]}</div>'
+            f'<div class="dis-badge" style="background:{d["pest_color"]}22;color:{d["pest_color"]};border:1px solid {d["pest_color"]}44">'
+            f'🐛 {d["pest_label"]}</div>'
+            f'</div>'
+            f'{alerts_html if d["fungal_score"]>=35 or d["pest_score"]>=35 else ""}'
+        )
+
+    # Per-plot stats
+    plot_stats     = stats.get("plot_stats") or []
+    plot_stats_json = json.dumps(plot_stats)
+
     badges = {
         "stress":      "🔴 Stress Detected",
         "no_data":     "☁️ No Data",
@@ -396,6 +448,42 @@ textarea{{resize:vertical;min-height:58px}}
 .chart-leg-dot{{width:8px;height:8px;border-radius:50%;flex-shrink:0}}
 .chart-empty{{color:#4a5270;font-size:0.82em;text-align:center;padding:24px 0}}
 .chart-note{{font-size:0.68em;color:#4a5270;margin-top:6px;text-align:right}}
+
+/* ── Crop calendar ─────────────────────────────────────────── */
+.cal-current-banner{{background:#0d2010;border:1px solid #2a4a2a;border-radius:10px;padding:10px 12px;margin-bottom:8px}}
+.cal-current-name{{font-size:0.9em;font-weight:700;color:#66bb6a;margin-bottom:6px}}
+.cal-task{{font-size:0.78em;color:#b0c4b0;padding:3px 0;display:flex;gap:7px;align-items:flex-start;border-bottom:1px solid #141824}}
+.cal-task:last-child{{border-bottom:none}}
+.cal-task-dot{{width:5px;height:5px;border-radius:50%;background:#66bb6a;flex-shrink:0;margin-top:5px}}
+.cal-upcoming-row{{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #141824;font-size:0.78em}}
+.cal-upcoming-row:last-child{{border-bottom:none}}
+.cal-up-icon{{font-size:1em;flex-shrink:0}}
+.cal-up-name{{flex:1;color:#b0b8d0}}
+.cal-up-when{{color:#4fc3f7;font-weight:600;white-space:nowrap;font-size:0.9em}}
+.cal-timeline{{background:#0a0c14;border:1px solid #1e2235;border-radius:10px;padding:8px 10px;margin-top:8px}}
+.cal-tl-row{{display:grid;grid-template-columns:18px 1fr auto;gap:6px;align-items:center;padding:4px 4px;border-radius:6px;font-size:0.76em}}
+.cal-tl-past{{color:#3a4050;opacity:0.6}}
+.cal-tl-current{{background:#1a2a1a;color:#66bb6a;font-weight:700}}
+.cal-tl-future{{color:#6070a0}}
+.cal-tl-icon{{text-align:center}}
+.cal-tl-name{{}}
+.cal-tl-date{{color:#4a5270;font-size:0.9em;white-space:nowrap}}
+.cal-tl-current .cal-tl-date{{color:#66bb6a}}
+
+/* ── Disease risk ───────────────────────────────────────────── */
+.dis-row{{display:grid;grid-template-columns:42px 1fr 1fr;gap:5px;align-items:center;padding:4px 0;border-bottom:1px solid #0d1020}}
+.dis-row:last-of-type{{border-bottom:none}}
+.dis-date{{font-size:0.72em;color:#6070a0;font-weight:600}}
+.dis-badge{{font-size:0.68em;font-weight:700;padding:2px 6px;border-radius:10px;text-align:center;white-space:nowrap}}
+.dis-alert{{font-size:0.72em;color:#ffa726;padding:2px 0 2px 48px;margin-top:-2px;margin-bottom:2px}}
+
+/* ── Per-plot stats ─────────────────────────────────────────── */
+.plot-stat-card{{background:#0a0c14;border:1px solid #1e2235;border-radius:10px;padding:10px 12px;margin-bottom:6px}}
+.plot-stat-name{{font-size:0.78em;font-weight:700;color:#8a9bb0;margin-bottom:6px}}
+.plot-stat-grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}}
+.plot-stat-item{{text-align:center}}
+.plot-stat-val{{font-size:1em;font-weight:700}}
+.plot-stat-lbl{{font-size:0.62em;color:#4a5270;margin-top:1px}}
 
 /* ── Stress diagnosis ──────────────────────────────────────── */
 .diag-card{{background:#0a0c14;border:1px solid #1e2235;border-radius:10px;padding:12px 14px;margin-bottom:8px}}
@@ -970,9 +1058,62 @@ textarea{{resize:vertical;min-height:58px}}
         </div>
       </div>
 
+      <!-- Crop Calendar -->
+      <div class="sec">
+        <div class="sec-title"><span class="sec-title-icon">📅</span> फसल कैलेंडर · Crop Calendar</div>
+        {"" if not cal_current else f"""
+        <div class='cal-current-banner'>
+          <div class='cal-current-name'>{cal_current_name} &nbsp;·&nbsp; Day {cal_days}</div>
+          {cal_tasks_html}
+        </div>"""}
+        {"" if not cal_upcoming else f"""
+        <div style='font-size:0.68em;font-weight:700;color:#4a5270;text-transform:uppercase;letter-spacing:.04em;margin:8px 0 4px'>
+          आगे क्या · Coming up
+        </div>
+        {cal_upcoming_html}"""}
+        {"" if not cal_timeline_html else f"""
+        <div class='cal-timeline'>{cal_timeline_html}</div>"""}
+        <div class="mrow" style="margin-top:8px">
+          <span class="ml">बुवाई · Sowing date</span>
+          <span class="mr">{cal_sowing}</span>
+        </div>
+      </div>
+
+      <!-- Disease Risk Forecast -->
+      <div class="sec">
+        <div class="sec-title"><span class="sec-title-icon">🦠</span> रोग पूर्वानुमान · Disease Risk</div>
+        <div style="background:#0a0c14;border:1px solid #1e2235;border-radius:10px;padding:10px 12px">
+          <div style="display:grid;grid-template-columns:42px 1fr 1fr;gap:5px;margin-bottom:6px">
+            <div></div>
+            <div style="font-size:0.65em;font-weight:700;color:#4a5270;text-align:center">🍄 Fungal · फफूंद</div>
+            <div style="font-size:0.65em;font-weight:700;color:#4a5270;text-align:center">🐛 Pest · कीट</div>
+          </div>
+          {disease_html}
+        </div>
+      </div>
+
+      <!-- Per-plot stats -->
+      {"" if not plot_stats else f"""
+      <div class='sec'>
+        <div class='sec-title'><span class='sec-title-icon'>🗺️</span> Plot-wise Health · प्लॉट का हाल</div>
+        {"".join(
+          f"<div class='plot-stat-card'>"
+          f"<div class='plot-stat-name'>{p['plot_name']} &nbsp;·&nbsp; {p['area_bigha']} bigha</div>"
+          f"<div class='plot-stat-grid'>"
+          f"<div class='plot-stat-item'><div class='plot-stat-val' style='color:{'#888' if p['health_pct'] is None else ('#ef5350' if p['health_pct']<45 else '#66bb6a')}'>"
+          f"{'—' if p['health_pct'] is None else str(p['health_pct'])+'%'}</div><div class='plot-stat-lbl'>Crop Health</div></div>"
+          f"<div class='plot-stat-item'><div class='plot-stat-val' style='color:{'#888' if p['stress_pct'] is None else ('#ef5350' if p['stress_pct']>30 else '#66bb6a')}'>"
+          f"{'—' if p['stress_pct'] is None else str(p['stress_pct'])+'%'}</div><div class='plot-stat-lbl'>Stressed Area</div></div>"
+          f"<div class='plot-stat-item'><div class='plot-stat-val' style='color:#8a9bb0'>"
+          f"{'—' if p['ndvi_mean'] is None else str(p['ndvi_mean'])}</div><div class='plot-stat-lbl'>NDVI</div></div>"
+          f"</div></div>"
+          for p in plot_stats
+        )}
+      </div>"""}
+
       <!-- Forecast -->
       <div class="sec">
-        <div class="sec-title"><span class="sec-title-icon">📅</span> 7-Day Forecast</div>
+        <div class="sec-title"><span class="sec-title-icon">🌦️</span> 7-Day Forecast · मौसम पूर्वानुमान</div>
         <table class="fc-table">
           <tr><th>Day</th><th>Max</th><th>Rain</th><th>Chance</th></tr>
           {forecast_rows}
@@ -1127,7 +1268,8 @@ L.tileLayer('https://mt{{s}}.google.com/vt/lyrs=h&x={{x}}&y={{y}}&z={{z}}', {{
 }})();
 
 // ── NDVI heatmap overlay ──────────────────────────────────────────────────
-const HEATMAP_URL = '{heatmap_url}';
+const HEATMAP_URL  = '{heatmap_url}';
+const PLOT_STATS   = {plot_stats_json};
 let heatmapLayer = null;
 let heatmapOn    = false;
 
@@ -1822,6 +1964,28 @@ function selectItem(id, type) {{
     const layer = plotLayers[id];
     layer.setStyle(plotStyle(layer.feature, true));
     map.fitBounds(layer.getBounds(), {{padding:[60,60],maxZoom:19}});
+    const ps = PLOT_STATS.find(p => p.plot_id === id);
+    if (ps) {{
+      const hc = ps.health_pct;
+      const hColor = hc === null ? '#888' : hc < 45 ? '#ef5350' : hc < 65 ? '#ffa726' : '#66bb6a';
+      const sc = ps.stress_pct;
+      const sColor = sc === null ? '#888' : sc > 30 ? '#ef5350' : sc > 10 ? '#ffa726' : '#66bb6a';
+      layer.bindPopup(`
+        <div style="padding:10px 12px;min-width:160px">
+          <div style="font-weight:700;font-size:0.9em;margin-bottom:8px">${{ps.plot_name}}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+            <div style="text-align:center;background:#141824;border-radius:8px;padding:6px">
+              <div style="font-size:1.1em;font-weight:800;color:${{hColor}}">${{hc === null ? '—' : hc + '%'}}</div>
+              <div style="font-size:0.65em;color:#8a9bb0;margin-top:2px">Crop Health</div>
+            </div>
+            <div style="text-align:center;background:#141824;border-radius:8px;padding:6px">
+              <div style="font-size:1.1em;font-weight:800;color:${{sColor}}">${{sc === null ? '—' : sc + '%'}}</div>
+              <div style="font-size:0.65em;color:#8a9bb0;margin-top:2px">Stressed Area</div>
+            </div>
+          </div>
+          <div style="font-size:0.7em;color:#4a5270;margin-top:6px;text-align:center">${{ps.area_bigha}} bigha · NDVI ${{ps.ndvi_mean ?? '—'}}</div>
+        </div>`, {{className:'dark-popup', maxWidth:220}}).openPopup();
+    }}
   }} else if (type === 'zone') {{
     if (zoneLayers[id]) {{
       zoneLayers[id].setStyle({{ fillOpacity:0.6, weight:3 }});

@@ -365,6 +365,16 @@ def get_farm_stats(farm: dict, days_back: int = 10) -> dict:
     # Spray savings estimate
     savings = _spray_savings(sat.get("stress_pct", 0) or 0, area_bigha)
 
+    # Crop calendar
+    crop         = farm.get("current_crop", "soybean")
+    calendar     = _crop_calendar(crop, sowing_date_str)
+
+    # Disease risk forecast (next 7 days)
+    disease_risk = _disease_risk_forecast(wthr)
+
+    # Per-plot satellite stats
+    plot_stats   = _get_plot_stats(farm, days_back)
+
     return {
         **sat,
         "area_bigha": area_bigha, "area_sqm": area_sqm,
@@ -374,6 +384,9 @@ def get_farm_stats(farm: dict, days_back: int = 10) -> dict:
         "spray_advisory": spray,
         "diagnosis": diagnosis,
         "spray_savings": savings,
+        "crop_calendar": calendar,
+        "disease_risk": disease_risk,
+        "plot_stats": plot_stats,
     }
 
 
@@ -498,6 +511,291 @@ def get_ndvi_heatmap_url(farm_polygon, days_back: int = 15,
     except Exception as e:
         print(f"  [warn] heatmap tile URL failed: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Crop calendar
+# ---------------------------------------------------------------------------
+
+# Stage definitions per crop: (day_start, day_end, name_en, name_hi, icon, key_tasks)
+_SOYBEAN_STAGES = [
+    (0,   7,   "Sowing",          "बुवाई",             "🌱", [
+        "Sow 2–3 cm deep, row spacing 30–45 cm · बीज 2-3 सेमी गहरा डालें",
+        "Apply basal DAP 50 kg/acre + potash 25 kg/acre · डीएपी डालें",
+        "Seed treatment: Rhizobium + PSB culture · बीज उपचार करें",
+    ]),
+    (8,   21,  "Germination",     "अंकुरण",            "🌿", [
+        "Keep soil moist, don't let surface crust · नमी बनाए रखें",
+        "Watch for poor germination patches · खराब अंकुरण देखें",
+        "Gap fill by day 10 if needed · 10वें दिन तक गैप भरें",
+    ]),
+    (22,  35,  "Seedling",        "पौधा बड़ा होना",    "🪴", [
+        "First weeding / pre-emergence herbicide · पहली निराई करें",
+        "Watch for stem fly and leaf miner · तना मक्खी देखें",
+        "Urea top dressing 20 kg/acre · यूरिया डालें",
+    ]),
+    (36,  55,  "Vegetative",      "वानस्पतिक वृद्धि", "🌾", [
+        "Second weeding if needed · दूसरी निराई",
+        "Spray for girdle beetle if stem damage seen · तना छेदक देखें",
+        "Monitor plant height and canopy · पौधे की बढ़त देखें",
+    ]),
+    (56,  80,  "Flowering ⚠️",   "फूल — जरूरी",      "🌸", [
+        "Do NOT miss irrigation — yield loss is permanent · सिंचाई ज़रूरी",
+        "Spray boron 0.2% + molybdenum 0.05% for pod set · स्प्रे करें",
+        "Avoid pesticide 6–10 AM (open flower hours) · सुबह छिड़काव नहीं",
+        "Watch for whitefly and yellow mosaic virus · सफेद मक्खी देखें",
+    ]),
+    (81,  100, "Pod Filling",     "फली भरना",          "🫛", [
+        "Keep field moist — pod fill = grain weight · नमी बनाए रखें",
+        "Spray potassium nitrate 1% for seed size · KNO₃ स्प्रे करें",
+        "Monitor for pod borer, leaf caterpillar · फली छेदक देखें",
+    ]),
+    (101, 120, "Maturity",        "पकना",              "🟡", [
+        "Stop irrigation 10–12 days before harvest · सिंचाई बंद करें",
+        "Harvest when 95% pods turn brown · 95% फलियाँ भूरी होने पर काटें",
+        "Do morning harvest — avoid afternoon heat · सुबह कटाई करें",
+    ]),
+    (121, 999, "Post-harvest",    "कटाई के बाद",       "♻️", [
+        "Deep plough field to break pest cycle · गहरी जुताई करें",
+        "Apply 2–3 tonnes FYM/acre · खाद डालें",
+        "Plan next season — update sowing date · अगली बुवाई की तैयारी",
+    ]),
+]
+
+_WHEAT_STAGES = [
+    (0,   10,  "Sowing",         "बुवाई",             "🌱", ["Sow 4–5 cm deep, 20–22 cm row spacing · बुवाई करें", "Apply DAP 50 kg/acre basal · डीएपी डालें"]),
+    (11,  25,  "Germination",    "अंकुरण",            "🌿", ["Keep soil moist · नमी बनाए रखें", "Watch for termite damage · दीमक देखें"]),
+    (26,  45,  "Tillering",      "कल्ले निकलना",      "🌾", ["First irrigation at CRI stage (21 days) · पहली सिंचाई", "Apply urea 30 kg/acre · यूरिया डालें"]),
+    (46,  65,  "Jointing",       "जोड़ बनना",         "🪴", ["Second irrigation at jointing · दूसरी सिंचाई", "Watch for yellow rust · पीला रतुआ देखें"]),
+    (66,  90,  "Heading/Flower", "बाली निकलना ⚠️",   "🌸", ["Third irrigation at heading · तीसरी सिंचाई", "Spray for aphids if found · माहू देखें"]),
+    (91,  115, "Grain fill",     "दाना भरना",         "🌻", ["Fourth irrigation at grain fill · चौथी सिंचाई", "Stop irrigation 2 weeks before harvest · सिंचाई बंद करें"]),
+    (116, 999, "Harvest",        "कटाई",              "🟡", ["Harvest at 25–30% grain moisture · कटाई करें", "Thresh promptly to avoid shattering · जल्दी गहाई करें"]),
+]
+
+_CHICKPEA_STAGES = [
+    (0,   10,  "Sowing",         "बुवाई",             "🌱", ["Sow 5–8 cm deep, 30 cm spacing · बुवाई करें", "Seed treatment with Rhizobium · बीज उपचार"]),
+    (11,  30,  "Germination",    "अंकुरण",            "🌿", ["Avoid waterlogging — chickpea is drought tolerant · जलभराव से बचें", "Weed by day 25 · निराई करें"]),
+    (31,  60,  "Vegetative",     "वानस्पतिक वृद्धि", "🌾", ["Apply phosphorus if deficient · फास्फोरस डालें", "Watch for pod borer early instars · फली छेदक देखें"]),
+    (61,  90,  "Flowering ⚠️",  "फूल — जरूरी",      "🌸", ["One protective irrigation at pre-flower · फूल से पहले सिंचाई", "Spray NPV/Bt for pod borer · जैविक कीटनाशक"]),
+    (91,  120, "Pod fill",       "फली भरना",          "🫛", ["Avoid excess moisture — causes fungal issues · ज़्यादा नमी नहीं", "Monitor Helicoverpa · इल्ली देखें"]),
+    (121, 999, "Maturity",       "पकना",              "🟡", ["Harvest at 80% pod maturity · 80% फलियाँ पकने पर", "Sun dry pods before storage · धूप में सुखाएं"]),
+]
+
+_STAGE_MAP = {"soybean": _SOYBEAN_STAGES, "wheat": _WHEAT_STAGES, "chickpea": _CHICKPEA_STAGES}
+
+
+def _crop_calendar(crop: str, sowing_date_str: str | None) -> dict:
+    """
+    Returns structured crop calendar: all stages with dates, current stage
+    highlighted, today's tasks, and upcoming milestones.
+    """
+    from datetime import date as date_cls
+
+    today = datetime.now(timezone.utc).date()
+
+    if not sowing_date_str:
+        return {"status": "no_sowing_date", "stages": [], "today_tasks": [], "upcoming": []}
+
+    try:
+        sowing_date = datetime.fromisoformat(sowing_date_str).date()
+    except ValueError:
+        return {"status": "no_sowing_date", "stages": [], "today_tasks": [], "upcoming": []}
+
+    days = (today - sowing_date).days
+    stages_def = _STAGE_MAP.get(crop.lower(), _SOYBEAN_STAGES)
+
+    stages = []
+    current_stage = None
+    today_tasks   = []
+    upcoming      = []   # next key milestones as {label, label_hi, days_away, date}
+
+    for (d_start, d_end, name_en, name_hi, icon, tasks) in stages_def:
+        stage_date_start = sowing_date + timedelta(days=d_start)
+        stage_date_end   = sowing_date + timedelta(days=d_end)
+        is_current = d_start <= days <= d_end
+        is_past    = days > d_end
+        is_future  = days < d_start
+
+        stages.append({
+            "name": name_en, "name_hi": name_hi, "icon": icon,
+            "day_start": d_start, "day_end": d_end,
+            "date_start": stage_date_start.strftime("%d %b"),
+            "date_end":   stage_date_end.strftime("%d %b"),
+            "is_current": is_current, "is_past": is_past, "is_future": is_future,
+            "tasks": tasks,
+        })
+
+        if is_current:
+            current_stage = stages[-1]
+            today_tasks   = tasks
+
+        # Collect upcoming milestones (next 2 future stages)
+        if is_future and len(upcoming) < 2:
+            days_away = d_start - days
+            upcoming.append({
+                "name": name_en, "name_hi": name_hi, "icon": icon,
+                "days_away": days_away,
+                "date": stage_date_start.strftime("%d %b"),
+            })
+
+    return {
+        "status": "ok",
+        "days_since_sowing": days,
+        "sowing_date": sowing_date.strftime("%d %b %Y"),
+        "stages": stages,
+        "current_stage": current_stage,
+        "today_tasks": today_tasks,
+        "upcoming": upcoming,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Disease risk forecast
+# ---------------------------------------------------------------------------
+
+def _disease_risk_forecast(wthr: dict) -> list[dict]:
+    """
+    For each of the next 7 days, score fungal and pest risk based on
+    forecasted weather. Returns list of {date, fungal_risk, pest_risk,
+    fungal_label, pest_label, fungal_color, pest_color, alerts: [str]}
+    """
+    w = wthr or {}
+    dates   = w.get("forecast_dates", [])
+    rains   = w.get("forecast_rain", [])
+    chances = w.get("forecast_rain_chance", [])
+    maxtemps= w.get("forecast_max_temp", [])
+
+    # Current humidity as proxy for overnight humidity (affects early days)
+    base_hum = w.get("humidity_pct", 50) or 50
+
+    results = []
+    prev_rain = 0  # carry-forward for wet-day effect
+
+    for i, d in enumerate(dates[:7]):
+        rain   = (rains[i]    if i < len(rains)    else 0) or 0
+        chance = (chances[i]  if i < len(chances)  else 0) or 0
+        tmax   = (maxtemps[i] if i < len(maxtemps) else 30) or 30
+
+        # Estimated humidity: rises with rain chance, base from current
+        est_hum = min(95, base_hum + chance * 0.3 + (prev_rain * 2))
+
+        # ── Fungal risk score ──────────────────────────────────
+        fscore = 0
+        falerts = []
+        if est_hum > 80:
+            fscore += 35; falerts.append(f"High humidity ~{est_hum:.0f}% · ज़्यादा नमी")
+        elif est_hum > 70:
+            fscore += 15
+        if 18 <= tmax <= 30:
+            fscore += 30; falerts.append(f"Temp {tmax}°C ideal for fungal growth · फफूंद के लिए अनुकूल तापमान")
+        elif 15 <= tmax <= 35:
+            fscore += 10
+        if rain > 5 or chance > 50:
+            fscore += 25; falerts.append(f"Rain {rain:.0f}mm ({chance:.0f}%) — wet leaves · बारिश से पत्तियाँ गीली")
+        elif prev_rain > 5:
+            fscore += 10; falerts.append("Previous day rain keeps leaves wet overnight · कल की बारिश का असर")
+
+        # ── Pest risk score ────────────────────────────────────
+        pscore = 0
+        palerts = []
+        if tmax > 30 and est_hum < 60:
+            pscore += 40; palerts.append(f"Hot dry {tmax}°C — sucking pests active · गर्म-सूखा मौसम, कीट सक्रिय")
+        elif tmax > 28:
+            pscore += 20
+        if chance < 20 and rain < 2:
+            pscore += 20; palerts.append("Dry spell — aphids, mites multiply fast · सूखे में माहू-घुन बढ़ते हैं")
+
+        def _risk_label_color(score):
+            if score >= 60: return "High · अधिक",   "#ef5350"
+            if score >= 35: return "Medium · मध्यम", "#ffa726"
+            return                  "Low · कम",       "#66bb6a"
+
+        fl, fc = _risk_label_color(fscore)
+        pl, pc = _risk_label_color(pscore)
+
+        results.append({
+            "date": d, "date_short": datetime.strptime(d, "%Y-%m-%d").strftime("%d %b"),
+            "fungal_score": fscore, "fungal_label": fl, "fungal_color": fc,
+            "pest_score":   pscore, "pest_label":   pl, "pest_color":   pc,
+            "alerts": falerts + palerts,
+        })
+        prev_rain = rain
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Per-plot satellite stats
+# ---------------------------------------------------------------------------
+
+def _get_plot_stats(farm: dict, days_back: int = 10) -> list[dict]:
+    """
+    For each plot in the farm, compute NDVI mean and stress % independently.
+    Returns list of {plot_id, plot_name, ndvi_mean, stress_pct, health_pct, area_bigha}
+    """
+    try:
+        import ee
+        ee.Initialize(project=GEE_PROJECT)
+    except Exception:
+        return []
+
+    plots = farm.get("plots", [])
+    if not plots:
+        return []
+
+    end_dt   = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=days_back)
+
+    s2 = (
+        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+        .filterDate(start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+    )
+    if s2.size().getInfo() == 0:
+        return []
+
+    median = s2.median()
+    ndvi   = median.normalizedDifference(["B8", "B4"])
+    crop   = farm.get("current_crop", "soybean")
+    threshold = {"soybean": 0.35, "wheat": 0.30, "chickpea": 0.28}.get(crop, 0.35)
+
+    results = []
+    for plot in plots:
+        coords = plot["boundary"]["coordinates"]
+        if coords[0] != coords[-1]:
+            coords = coords + [coords[0]]
+        poly = ee.Geometry.Polygon([coords])
+        sqm  = _polygon_area_sqm(coords)
+        bigha = round(sqm / MP_BIGHA_SQM, 1)
+
+        try:
+            vi = ndvi.reduceRegion(
+                reducer=ee.Reducer.mean(), geometry=poly, scale=10, maxPixels=1e8
+            ).getInfo()
+            ndvi_mean = round(vi.get("nd", 0) or 0, 3)
+
+            sp = ndvi.lt(threshold).reduceRegion(
+                reducer=ee.Reducer.mean(), geometry=poly, scale=10, maxPixels=1e8
+            ).getInfo()
+            stress_pct = round((sp.get("nd", 0) or 0) * 100, 1)
+            health_pct = min(100, max(0, round(ndvi_mean / 0.8 * 100)))
+
+            results.append({
+                "plot_id":    plot["id"],
+                "plot_name":  plot["name"],
+                "ndvi_mean":  ndvi_mean,
+                "stress_pct": stress_pct,
+                "health_pct": health_pct,
+                "area_bigha": bigha,
+            })
+        except Exception as e:
+            results.append({
+                "plot_id": plot["id"], "plot_name": plot["name"],
+                "ndvi_mean": None, "stress_pct": None,
+                "health_pct": None, "area_bigha": bigha,
+            })
+
+    return results
 
 
 # ---------------------------------------------------------------------------
