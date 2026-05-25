@@ -1136,16 +1136,19 @@ function toggleHeatmap() {{
   heatmapOn = !heatmapOn;
   if (heatmapOn) {{
     if (!heatmapLayer) {{
-      // EE thumbnail is a static image — overlay it as an image layer over farm bounds
-      const bounds = farmLayer.getBounds();
-      heatmapLayer = L.imageOverlay(HEATMAP_URL, bounds, {{
-        opacity: 0.75, interactive: false,
+      // EE tile layer — aligns perfectly, no expiry
+      heatmapLayer = L.tileLayer(HEATMAP_URL, {{
+        opacity: 0.75,
+        attribution: 'Google Earth Engine · Sentinel-2',
+        maxZoom: 20,
       }}).addTo(map);
+    }} else {{
+      heatmapLayer.addTo(map);
     }}
     btn.classList.add('active');
     leg.classList.add('show');
   }} else {{
-    if (heatmapLayer) {{ map.removeLayer(heatmapLayer); heatmapLayer = null; }}
+    if (heatmapLayer) {{ map.removeLayer(heatmapLayer); }}
     btn.classList.remove('active');
     leg.classList.remove('show');
   }}

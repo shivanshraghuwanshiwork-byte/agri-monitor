@@ -452,9 +452,10 @@ def get_ndvi_timeseries(farm_polygon, sowing_date_str: str | None = None,
 
 def get_ndvi_heatmap_url(farm_polygon, days_back: int = 15) -> str | None:
     """
-    Generate a public Earth Engine thumbnail URL of the NDVI heatmap
-    (green→red false-colour) for the farm. Returns None if unavailable.
-    The URL is valid for ~3 hours (EE signed URL).
+    Generate an Earth Engine tile URL template for the NDVI heatmap.
+    Returns a tile URL template like https://earthengine.googleapis.com/.../{z}/{x}/{y}
+    which Leaflet can use directly as a TileLayer — no expiry issues.
+    Returns None if no imagery available.
     """
     import ee
 
@@ -467,22 +468,19 @@ def get_ndvi_heatmap_url(farm_polygon, days_back: int = 15) -> str | None:
         .filterDate(start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
         .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
     )
-    if s2.size().getInfo() == 0:
-        return None
-
-    ndvi = s2.median().normalizedDifference(["B8", "B4"]).rename("NDVI")
     try:
-        url = ndvi.getThumbURL({
+        if s2.size().getInfo() == 0:
+            return None
+        ndvi = s2.median().normalizedDifference(["B8", "B4"]).rename("NDVI")
+        map_id = ndvi.getMapId({
             "min": 0.0, "max": 0.8,
             "palette": ["#d73027", "#f46d43", "#fdae61", "#fee08b",
                         "#d9ef8b", "#a6d96a", "#66bd63", "#1a9850"],
-            "region": farm_polygon,
-            "dimensions": 512,
-            "format": "png",
         })
-        return url
+        # tile_fetcher gives a URL template with {z}/{x}/{y}
+        return map_id["tile_fetcher"].url_format
     except Exception as e:
-        print(f"  [warn] heatmap URL failed: {e}")
+        print(f"  [warn] heatmap tile URL failed: {e}")
         return None
 
 
