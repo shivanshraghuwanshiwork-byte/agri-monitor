@@ -102,6 +102,54 @@ def build_html(farm: dict, stats: dict) -> str:
         for r in spray.get("reasons", [])
     )
 
+    # Stress diagnosis
+    diag          = stats.get("diagnosis") or {}
+    diag_cause    = diag.get("cause", "—")
+    diag_cause_hi = diag.get("cause_hi", "—")
+    diag_action   = diag.get("action", "—")
+    diag_action_hi= diag.get("action_hi", "—")
+    diag_conf     = diag.get("confidence", "low")
+    diag_icon     = diag.get("icon", "⚠️")
+    diag_factors_html = "".join(
+        f'<div class="diag-factor">{f}</div>'
+        for f in diag.get("factors", [])
+    )
+    diag_conf_color = {"high": "#ef5350", "medium": "#ffa726", "low": "#8a9bb0"}.get(diag_conf, "#8a9bb0")
+    diag_conf_label = {"high": "High confidence · पक्का", "medium": "Medium · संभावित", "low": "Low · अनुमान"}.get(diag_conf, "—")
+    diag_show = diag.get("cause_key") not in (None, "") and diag_cause != "—"
+
+    if diag_show:
+        diag_section_html = f"""
+      <div class="sec">
+        <div class="sec-title"><span class="sec-title-icon">🔬</span> तनाव का कारण · Stress Diagnosis</div>
+        <div class="diag-card">
+          <div class="diag-header">
+            <div class="diag-icon">{diag_icon}</div>
+            <div class="diag-title">
+              <div class="diag-cause">{diag_cause}</div>
+              <div class="diag-cause-hi">{diag_cause_hi}</div>
+              <span class="diag-conf" style="color:{diag_conf_color}">{diag_conf_label}</span>
+            </div>
+          </div>
+          <div class="diag-action-box">
+            <div class="diag-action">👉 {diag_action}</div>
+            <div class="diag-action-hi">{diag_action_hi}</div>
+          </div>
+          {diag_factors_html}
+        </div>
+      </div>"""
+    else:
+        diag_section_html = ""
+
+    # Spray savings
+    sav           = stats.get("spray_savings") or {}
+    sav_pct       = sav.get("saving_pct", 0)
+    sav_stressed  = sav.get("stressed_bigha", 0)
+    sav_saved_bh  = sav.get("saved_bigha", 0)
+    sav_cost      = sav.get("saved_cost_inr", 0)
+    area_bigha    = stats.get("area_bigha", 0)
+    stress_pct_val= stats.get("stress_pct", 0) or 0
+
     badges = {
         "stress":      "🔴 Stress Detected",
         "no_data":     "☁️ No Data",
@@ -348,6 +396,37 @@ textarea{{resize:vertical;min-height:58px}}
 .chart-leg-dot{{width:8px;height:8px;border-radius:50%;flex-shrink:0}}
 .chart-empty{{color:#4a5270;font-size:0.82em;text-align:center;padding:24px 0}}
 .chart-note{{font-size:0.68em;color:#4a5270;margin-top:6px;text-align:right}}
+
+/* ── Stress diagnosis ──────────────────────────────────────── */
+.diag-card{{background:#0a0c14;border:1px solid #1e2235;border-radius:10px;padding:12px 14px;margin-bottom:8px}}
+.diag-header{{display:flex;align-items:flex-start;gap:10px;margin-bottom:8px}}
+.diag-icon{{font-size:1.8em;line-height:1;flex-shrink:0}}
+.diag-title{{flex:1}}
+.diag-cause{{font-size:1em;font-weight:700;color:#e0e8f0;line-height:1.2}}
+.diag-cause-hi{{font-size:0.82em;color:#8a9bb0;margin-top:2px}}
+.diag-conf{{display:inline-block;font-size:0.68em;font-weight:700;padding:2px 7px;border-radius:10px;background:#1a1f30;margin-top:5px}}
+.diag-action-box{{background:#141824;border-left:3px solid #4fc3f7;border-radius:0 8px 8px 0;padding:8px 10px;margin-bottom:8px}}
+.diag-action{{font-size:0.82em;font-weight:600;color:#e0e8f0}}
+.diag-action-hi{{font-size:0.78em;color:#8a9bb0;margin-top:2px}}
+.diag-factor{{font-size:0.76em;color:#8a9bb0;padding:3px 0;border-bottom:1px solid #141824;display:flex;gap:6px;align-items:flex-start}}
+.diag-factor:last-child{{border-bottom:none}}
+.diag-factor::before{{content:"›";color:#4a5a6a;flex-shrink:0}}
+
+/* ── Spray zone targeting ──────────────────────────────────── */
+.spray-target{{background:#0a0c14;border:1px solid #1e2235;border-radius:10px;padding:12px 14px;margin-bottom:8px}}
+.spray-target-title{{font-size:0.72em;font-weight:700;color:#8a9bb0;text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px}}
+.spray-zones-bar{{height:20px;border-radius:6px;overflow:hidden;display:flex;margin-bottom:8px}}
+.spray-zones-bar-stress{{background:#ef5350;display:flex;align-items:center;justify-content:center;font-size:0.65em;font-weight:700;color:#fff;transition:width .4s}}
+.spray-zones-bar-ok{{background:#2a3a2a;display:flex;align-items:center;justify-content:center;font-size:0.65em;color:#66bb6a}}
+.spray-stat-row{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px}}
+.spray-stat{{background:#141824;border-radius:8px;padding:7px 8px;text-align:center}}
+.spray-stat-val{{font-size:1em;font-weight:700}}
+.spray-stat-lbl{{font-size:0.65em;color:#8a9bb0;margin-top:2px;line-height:1.2}}
+.spray-saving-banner{{background:linear-gradient(135deg,#0d2a0d,#112211);border:1px solid #2a4a2a;border-radius:8px;padding:8px 10px;text-align:center}}
+.spray-saving-big{{font-size:1.4em;font-weight:800;color:#66bb6a}}
+.spray-saving-sub{{font-size:0.72em;color:#8a9bb0;margin-top:2px}}
+.btn-spray-zones{{width:100%;margin-top:8px;background:#1a2a3a;border:1px solid #2a4a6a;color:#4fc3f7;border-radius:8px;padding:8px;font-size:0.82em;font-weight:600;cursor:pointer;transition:background .2s}}
+.btn-spray-zones:hover{{background:#1e3048}}
 
 /* ── Spray advisory ────────────────────────────────────────── */
 .spray-score-ring{{display:flex;align-items:center;gap:12px;margin-bottom:10px}}
@@ -834,6 +913,40 @@ textarea{{resize:vertical;min-height:58px}}
       <div class="sec">
         <div class="sec-title"><span class="sec-title-icon">📈</span> फसल की वृद्धि · Crop Growth</div>
         {"<div class='chart-wrap'><canvas id='growth-chart'></canvas><div class='chart-note'>" + str(len(timeseries)) + " satellite images since sowing</div></div>" if timeseries else "<div class='chart-empty'>📡 No growth data yet<br><span style='font-size:0.85em'>Run monitor.py after sowing date is set</span></div>"}
+      </div>
+
+      <!-- Stress Diagnosis -->
+      {diag_section_html}
+
+      <!-- Spray Zone Targeting -->
+      <div class="sec">
+        <div class="sec-title"><span class="sec-title-icon">🎯</span> Spray Zone Targeting · कहाँ छिड़काव करें</div>
+        <div class="spray-target">
+          <div class="spray-target-title">Field coverage · खेत का हिस्सा</div>
+          <div class="spray-zones-bar">
+            <div class="spray-zones-bar-stress" style="width:{min(100,stress_pct_val):.0f}%">{f"{stress_pct_val:.0f}% stressed" if stress_pct_val > 8 else ""}</div>
+            <div class="spray-zones-bar-ok" style="width:{max(0,100-stress_pct_val):.0f}%">{f"{100-stress_pct_val:.0f}% healthy" if stress_pct_val < 92 else ""}</div>
+          </div>
+          <div class="spray-stat-row">
+            <div class="spray-stat">
+              <div class="spray-stat-val" style="color:#ef5350">{sav_stressed} bh</div>
+              <div class="spray-stat-lbl">Spray this · यहाँ करें</div>
+            </div>
+            <div class="spray-stat">
+              <div class="spray-stat-val" style="color:#66bb6a">{sav_saved_bh} bh</div>
+              <div class="spray-stat-lbl">Skip this · यह छोड़ें</div>
+            </div>
+            <div class="spray-stat">
+              <div class="spray-stat-val" style="color:#ffa726">{sav_pct}%</div>
+              <div class="spray-stat-lbl">Chemical saved · बचत</div>
+            </div>
+          </div>
+          <div class="spray-saving-banner">
+            <div class="spray-saving-big">₹{sav_cost:,} saved</div>
+            <div class="spray-saving-sub">अगर सिर्फ कमज़ोर हिस्से में छिड़काव करें · if you spray only stressed zones</div>
+          </div>
+          {"<button class='btn-spray-zones' onclick='toggleHeatmap()'>🌡 Show stressed zones on map · नक्शे पर देखें</button>" if heatmap_url else ""}
+        </div>
       </div>
 
       <!-- Spray Advisory -->

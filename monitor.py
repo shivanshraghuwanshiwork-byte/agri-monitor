@@ -345,7 +345,336 @@ def get_farm_stats(farm: dict, days_back: int = 10) -> dict:
     sat  = get_satellite_stats(farm, [], farm_polygon, days_back)
     wthr = get_weather(lat, lon)
 
-    return {**sat, "area_bigha": area_bigha, "area_sqm": area_sqm, "plots": plot_info, "weather": wthr}
+    # Growth curve — fetch per-image timeseries since sowing
+    sowing_date_str = farm.get("sowing_date")
+    print("  Fetching NDVI time-series (growth curve)...")
+    timeseries = get_ndvi_timeseries(farm_polygon, sowing_date_str)
+
+    # NDVI heatmap thumbnail URL
+    print("  Generating NDVI heatmap URL...")
+    heatmap_url = get_ndvi_heatmap_url(farm_polygon, days_back=days_back)
+
+    # Spray advisory from current weather
+    spray = _spray_advisory(wthr)
+
+    # Stress cause diagnosis
+    diagnosis = _stress_diagnosis(sat, wthr)
+
+    # Spray savings estimate
+    savings = _spray_savings(sat.get("stress_pct", 0) or 0, area_bigha)
+
+    return {
+        **sat,
+        "area_bigha": area_bigha, "area_sqm": area_sqm,
+        "plots": plot_info, "weather": wthr,
+        "ndvi_timeseries": timeseries,
+        "heatmap_url": heatmap_url,
+        "spray_advisory": spray,
+        "diagnosis": diagnosis,
+        "spray_savings": savings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# NDVI time-series (full season growth curve)
+# ---------------------------------------------------------------------------
+
+def get_ndvi_timeseries(farm_polygon, sowing_date_str: str | None = None,
+                        season_days: int = 120) -> list[dict]:
+    """
+    Return a list of {date, ndvi, ndre, lswi, cloud_pct} dicts for every
+    Sentinel-2 acquisition over the farm since sowing (or last season_days).
+    Cloud filter is relaxed to 60% so we capture more points; individual
+    per-image cloud % is recorded so the UI can flag noisy points.
+    """
+    import ee
+
+    end_dt = datetime.now(timezone.utc)
+    if sowing_date_str:
+        try:
+            start_dt = datetime.fromisoformat(sowing_date_str).replace(tzinfo=timezone.utc)
+            # Sowing is in the future — no crop yet, nothing to chart
+            if start_dt > end_dt:
+                return []
+            # Don't go more than season_days into the future from sowing
+            if (end_dt - start_dt).days > season_days:
+                start_dt = end_dt - timedelta(days=season_days)
+        except ValueError:
+            start_dt = end_dt - timedelta(days=season_days)
+    else:
+        start_dt = end_dt - timedelta(days=season_days)
+
+    collection = (
+        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+        .filterBounds(farm_polygon)
+        .filterDate(start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 60))
+    )
+
+    size = collection.size().getInfo()
+    if size == 0:
+        return []
+
+    def extract_point(img):
+        date  = ee.Date(img.get("system:time_start")).format("YYYY-MM-dd")
+        cloud = img.getNumber("CLOUDY_PIXEL_PERCENTAGE")
+        ndvi  = img.normalizedDifference(["B8",  "B4" ]).rename("NDVI")
+        ndre  = img.normalizedDifference(["B8A", "B5" ]).rename("NDRE")
+        lswi  = img.normalizedDifference(["B8A", "B11"]).rename("LSWI")
+        vi = ndvi.addBands(ndre).addBands(lswi).reduceRegion(
+            reducer=ee.Reducer.mean(), geometry=farm_polygon,
+            scale=20, maxPixels=1e7,
+        )
+        return ee.Feature(None, {
+            "date":      date,
+            "ndvi":      vi.getNumber("NDVI"),
+            "ndre":      vi.getNumber("NDRE"),
+            "lswi":      vi.getNumber("LSWI"),
+            "cloud_pct": cloud,
+        })
+
+    features = collection.map(extract_point).getInfo()["features"]
+    points = []
+    for f in features:
+        p = f["properties"]
+        if p.get("ndvi") is None:
+            continue
+        points.append({
+            "date":      p["date"],
+            "ndvi":      round(p["ndvi"] or 0, 3),
+            "ndre":      round(p["ndre"] or 0, 3),
+            "lswi":      round(p["lswi"] or 0, 3),
+            "cloud_pct": round(p["cloud_pct"] or 0, 1),
+        })
+    points.sort(key=lambda x: x["date"])
+    return points
+
+
+def get_ndvi_heatmap_url(farm_polygon, days_back: int = 15) -> str | None:
+    """
+    Generate a public Earth Engine thumbnail URL of the NDVI heatmap
+    (green→red false-colour) for the farm. Returns None if unavailable.
+    The URL is valid for ~3 hours (EE signed URL).
+    """
+    import ee
+
+    end_dt   = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=days_back)
+
+    s2 = (
+        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+        .filterBounds(farm_polygon)
+        .filterDate(start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+    )
+    if s2.size().getInfo() == 0:
+        return None
+
+    ndvi = s2.median().normalizedDifference(["B8", "B4"]).rename("NDVI")
+    try:
+        url = ndvi.getThumbURL({
+            "min": 0.0, "max": 0.8,
+            "palette": ["#d73027", "#f46d43", "#fdae61", "#fee08b",
+                        "#d9ef8b", "#a6d96a", "#66bd63", "#1a9850"],
+            "region": farm_polygon,
+            "dimensions": 512,
+            "format": "png",
+        })
+        return url
+    except Exception as e:
+        print(f"  [warn] heatmap URL failed: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Stress cause diagnosis
+# ---------------------------------------------------------------------------
+
+def _stress_diagnosis(sat: dict, wthr: dict) -> dict:
+    """
+    Rule-based diagnosis of *why* the crop is stressed.
+    Returns {cause, cause_hi, confidence, action, action_hi, factors: [str]}
+    """
+    ndvi  = sat.get("ndvi_mean", 0) or 0
+    ndre  = sat.get("ndre_mean", 0) or 0
+    lswi  = sat.get("lswi_mean", 0) or 0
+    stress_pct = sat.get("stress_pct", 0) or 0
+    status = sat.get("status", "ok")
+
+    w           = wthr or {}
+    rain_7d     = w.get("rain_7d_mm", 0) or 0
+    humidity    = w.get("humidity_pct", 0) or 0
+    temp        = w.get("temp_c", 25) or 25
+    soil_label  = sat.get("soil_moisture_label") or ""
+    soil_vv     = sat.get("soil_vv_db")
+
+    if status in ("pre_sowing", "no_data") or ndvi < 0.08:
+        return {
+            "cause": "No crop yet", "cause_hi": "फसल नहीं है",
+            "confidence": "high",
+            "action": "Field is bare — check back after sowing",
+            "action_hi": "खेत खाली है — बुवाई के बाद देखें",
+            "factors": [], "icon": "🌾"
+        }
+
+    scores = {}  # cause → score (higher = more likely)
+
+    # ── Drought / water stress ─────────────────────────────────
+    drought_score = 0
+    drought_factors = []
+    if lswi < 0:
+        drought_score += 40; drought_factors.append("LSWI negative — leaves losing water · पत्तियां सूख रही हैं")
+    elif lswi < 0.1:
+        drought_score += 20; drought_factors.append("LSWI low — leaf moisture low · पत्तियों में कम नमी")
+    if rain_7d < 8:
+        drought_score += 25; drought_factors.append(f"Only {rain_7d:.0f}mm rain in last 7 days · पिछले 7 दिन कम बारिश")
+    if soil_label in ("dry", "very dry"):
+        drought_score += 25; drought_factors.append(f"Satellite radar: soil is {soil_label} · मिट्टी सूखी")
+    if temp > 36:
+        drought_score += 10; drought_factors.append(f"High temp {temp:.0f}°C increasing water loss · गर्मी से पानी उड़ रहा है")
+    scores["drought"] = (drought_score, drought_factors,
+        "Drought / Water stress", "सूखा / पानी की कमी",
+        "Irrigate stressed zones before any spray",
+        "पहले सिंचाई करें, फिर छिड़काव करें", "💧")
+
+    # ── Fungal / disease ──────────────────────────────────────
+    fungal_score = 0
+    fungal_factors = []
+    if humidity > 78:
+        fungal_score += 30; fungal_factors.append(f"High humidity {humidity:.0f}% — ideal for fungal growth · नमी ज़्यादा है")
+    if 18 <= temp <= 30:
+        fungal_score += 20; fungal_factors.append(f"Temp {temp:.0f}°C in fungal disease range · तापमान फफूंद के लिए सही है")
+    if rain_7d > 20:
+        fungal_score += 20; fungal_factors.append(f"{rain_7d:.0f}mm rain this week — wet leaves · हफ्ते में ज़्यादा बारिश")
+    if ndre < 0.15 and ndvi > 0.3:
+        fungal_score += 25; fungal_factors.append("NDRE dropping while NDVI holds — early disease signal · पत्तियों में तनाव शुरू")
+    scores["fungal"] = (fungal_score, fungal_factors,
+        "Fungal disease risk", "फफूंद रोग का खतरा",
+        "Apply fungicide to stressed zones — spray in morning",
+        "सुबह फफूंदनाशक का छिड़काव करें", "🍄")
+
+    # ── Pest / insect damage ──────────────────────────────────
+    pest_score = 0
+    pest_factors = []
+    if ndvi < 0.35 and ndre > 0.15:
+        pest_score += 35; pest_factors.append("NDVI low but NDRE holds — leaf area lost, not nutrient stress · पत्तियां कम हुई हैं")
+    if stress_pct > 15 and stress_pct < 60:
+        pest_score += 20; pest_factors.append(f"{stress_pct:.0f}% of field in patches — pest damage is patchy · खेत में जगह-जगह नुकसान")
+    if temp > 30 and humidity < 65:
+        pest_score += 15; pest_factors.append("Hot dry conditions favour sucking pests · गर्म-सूखा मौसम कीटों के लिए अनुकूल")
+    scores["pest"] = (pest_score, pest_factors,
+        "Pest / insect damage", "कीट / कीड़े का नुकसान",
+        "Scout field for insects — spray only infested zones",
+        "खेत में कीट देखें — सिर्फ प्रभावित हिस्से में छिड़काव करें", "🐛")
+
+    # ── Nutrient deficiency ────────────────────────────────────
+    nutrient_score = 0
+    nutrient_factors = []
+    if ndre < 0.12 and ndvi < 0.4:
+        nutrient_score += 35; nutrient_factors.append("Both NDVI and NDRE low — likely nitrogen deficiency · नाइट्रोजन की कमी हो सकती है")
+    if lswi > 0.1 and ndvi < 0.35:
+        nutrient_score += 20; nutrient_factors.append("Moisture ok but growth weak — nutrient limited · पानी ठीक पर बढ़त कम")
+    scores["nutrient"] = (nutrient_score, nutrient_factors,
+        "Nutrient deficiency", "पोषण की कमी",
+        "Apply foliar fertiliser to stressed zones",
+        "कमज़ोर क्षेत्र में पत्ती पर खाद का छिड़काव करें", "🌿")
+
+    # Pick highest scoring cause
+    best = max(scores.items(), key=lambda x: x[1][0])
+    cause_key, (top_score, factors, cause, cause_hi, action, action_hi, icon) = best
+
+    confidence = "high" if top_score >= 50 else ("medium" if top_score >= 25 else "low")
+
+    return {
+        "cause": cause, "cause_hi": cause_hi,
+        "action": action, "action_hi": action_hi,
+        "confidence": confidence, "score": top_score,
+        "factors": factors, "icon": icon,
+        "cause_key": cause_key,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Spray savings estimate
+# ---------------------------------------------------------------------------
+
+def _spray_savings(stress_pct: float, area_bigha: float) -> dict:
+    """
+    If farmer only sprays stressed zones instead of full field,
+    estimate chemical and cost savings.
+    """
+    healthy_pct   = max(0, 100 - stress_pct)
+    saving_pct    = round(healthy_pct)
+    stressed_bigha = round(area_bigha * stress_pct / 100, 1)
+    saved_bigha    = round(area_bigha * healthy_pct / 100, 1)
+    # Rough cost: ₹300/bigha average spray cost in MP
+    cost_per_bigha = 300
+    saved_cost     = round(saved_bigha * cost_per_bigha)
+    return {
+        "saving_pct":      saving_pct,
+        "stressed_bigha":  stressed_bigha,
+        "saved_bigha":     saved_bigha,
+        "saved_cost_inr":  saved_cost,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Spray advisory (wind + humidity + temperature)
+# ---------------------------------------------------------------------------
+
+def _spray_advisory(w: dict) -> dict:
+    """
+    Return a spray advisory based on current weather.
+    Returns {ok: bool, score: 0-100, reasons: [str], label: str}
+    """
+    wind      = w.get("wind_kmh") or 0
+    gusts     = w.get("wind_gusts_kmh") or 0
+    humidity  = w.get("humidity_pct") or 0
+    temp      = w.get("temp_c") or 25
+    cloud     = w.get("cloud_cover_pct") or 0
+
+    reasons = []
+    score   = 100  # start perfect, deduct
+
+    # Wind — biggest factor. >15 km/h = drift risk; >25 = don't spray
+    if gusts > 25:
+        score -= 50; reasons.append("⛔ Gusts >{:.0f} km/h — chemical will drift".format(gusts))
+    elif wind > 15:
+        score -= 30; reasons.append("⚠ Wind {:.0f} km/h — drift risk, spray early morning".format(wind))
+    elif wind < 3:
+        score -= 10; reasons.append("☁ Calm air — inversion risk; spray may not penetrate canopy")
+
+    # Humidity — low = chemical dries before absorption
+    if humidity < 40:
+        score -= 25; reasons.append("⚠ Low humidity ({:.0f}%) — chemical dries on leaf before absorbing".format(humidity))
+    elif humidity > 90:
+        score -= 10; reasons.append("⚠ Very high humidity — fungal disease risk post-spray")
+
+    # Temperature
+    if temp > 38:
+        score -= 20; reasons.append("🔥 Temp {:.0f}°C — spray will volatilise; use evening".format(temp))
+    elif temp < 10:
+        score -= 10; reasons.append("🌡 Low temp — chemical absorption slowed")
+
+    # Rain chance — if rain >30% don't spray (washoff)
+    rain_ch = w.get("rain_chance_pct") or 0
+    if rain_ch > 50:
+        score -= 30; reasons.append("🌧 {:.0f}% rain chance today — spray will be washed off".format(rain_ch))
+    elif rain_ch > 30:
+        score -= 10; reasons.append("🌦 {:.0f}% rain chance — risk of washoff".format(rain_ch))
+
+    score = max(0, score)
+    if score >= 75:
+        label = "Good to spray · छिड़काव करें"
+    elif score >= 50:
+        label = "Spray with caution · सावधानी से करें"
+    else:
+        label = "Avoid spray today · आज न करें"
+
+    if not reasons:
+        reasons = ["✓ Wind, humidity and temperature all within ideal range"]
+
+    return {"ok": score >= 75, "score": score, "label": label, "reasons": reasons}
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +689,10 @@ def save_ndvi_map(farm: dict, out_path: Path) -> None:
         return
 
     ee.Initialize(project=GEE_PROJECT)
-    coords = farm["boundary"]["coordinates"]
+    all_coords = [c for p in farm.get("plots", []) for c in p["boundary"]["coordinates"]]
+    if not all_coords:
+        all_coords = farm.get("boundary", {}).get("coordinates", [])
+    coords = all_coords
     if coords[0] != coords[-1]:
         coords = coords + [coords[0]]
     farm_polygon = ee.Geometry.Polygon([coords])
