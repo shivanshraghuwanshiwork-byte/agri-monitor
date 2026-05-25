@@ -442,8 +442,6 @@ textarea{{resize:vertical;min-height:58px}}
 #btn-heatmap.unavail{{opacity:0.35;cursor:not-allowed}}
 #heatmap-legend{{position:absolute;bottom:90px;left:12px;z-index:1001;background:#0a0c14ee;border:1px solid #1e2130;border-radius:10px;padding:8px 12px;display:none;backdrop-filter:blur(8px)}}
 #heatmap-legend.show{{display:block}}
-.hm-grad{{width:130px;height:8px;border-radius:4px;background:linear-gradient(to right,#d73027,#f46d43,#fdae61,#d9ef8b,#66bd63,#1a9850);margin:4px 0}}
-.hm-labels{{display:flex;justify-content:space-between;font-size:0.65em;color:#8890a8}}
 
 /* ── Irrigation event list ─────────────────────────────────── */
 .irr-list{{display:flex;flex-direction:column;gap:8px;margin-top:6px}}
@@ -506,14 +504,22 @@ textarea{{resize:vertical;min-height:58px}}
       <button id="btn-draw" class="tb-btn" onclick="setMode('draw')">✏️ Draw Zone</button>
       <button id="btn-grid" class="tb-btn" onclick="setMode('grid')">⊞ Grid Zones</button>
       <button id="btn-cancel-mode" class="tb-btn cancel" onclick="setMode('click')" style="display:none">✕ Cancel</button>
-      <button id="btn-heatmap" onclick="toggleHeatmap()" title="NDVI heatmap overlay">🌡 NDVI Map</button>
+      <button id="btn-heatmap" onclick="toggleHeatmap()" title="Spray zone map">🎯 Spray Zones</button>
     </div>
     <div id="mode-hint"></div>
     <div id="heatmap-legend">
-      <div style="font-size:0.72em;font-weight:700;color:#ffa726;margin-bottom:4px">NDVI Health Map</div>
-      <div class="hm-grad"></div>
-      <div class="hm-labels"><span>0 Bare</span><span>0.4 Mod</span><span>0.8 Dense</span></div>
-      <div style="font-size:0.65em;color:#4a5270;margin-top:5px">Sentinel-2 · {date}</div>
+      <div style="font-size:0.72em;font-weight:700;color:#e0e8f0;margin-bottom:6px">Spray Zone Map · छिड़काव नक्शा</div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;align-items:center;gap:7px;font-size:0.75em">
+          <span style="width:14px;height:14px;background:#ef5350;border-radius:3px;flex-shrink:0;display:inline-block"></span>
+          <span style="color:#ef5350;font-weight:600">Spray here · यहाँ करें</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:7px;font-size:0.75em">
+          <span style="width:14px;height:14px;background:#66bb6a;border-radius:3px;flex-shrink:0;display:inline-block"></span>
+          <span style="color:#66bb6a;font-weight:600">Skip this · यह छोड़ें</span>
+        </div>
+      </div>
+      <div style="font-size:0.63em;color:#4a5270;margin-top:6px">Sentinel-2 · {date}</div>
     </div>
     <button id="btn-locate" onclick="locateMe()" title="My location · मेरी लोकेशन">📍</button>
     <div id="loc-toast"></div>

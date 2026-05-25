@@ -350,9 +350,11 @@ def get_farm_stats(farm: dict, days_back: int = 10) -> dict:
     print("  Fetching NDVI time-series (growth curve)...")
     timeseries = get_ndvi_timeseries(farm_polygon, sowing_date_str)
 
-    # NDVI heatmap thumbnail URL
-    print("  Generating NDVI heatmap URL...")
-    heatmap_url = get_ndvi_heatmap_url(farm_polygon, days_back=days_back)
+    # NDVI heatmap — binary stress zones (red=spray, green=skip)
+    print("  Generating stress zone map...")
+    stress_threshold = sat.get("stress_threshold", 0.35)
+    heatmap_url = get_ndvi_heatmap_url(farm_polygon, days_back=days_back,
+                                        stress_threshold=stress_threshold)
 
     # Spray advisory from current weather
     spray = _spray_advisory(wthr)
@@ -450,12 +452,12 @@ def get_ndvi_timeseries(farm_polygon, sowing_date_str: str | None = None,
     return points
 
 
-def get_ndvi_heatmap_url(farm_polygon, days_back: int = 15) -> str | None:
+def get_ndvi_heatmap_url(farm_polygon, days_back: int = 15,
+                         stress_threshold: float = 0.35) -> str | None:
     """
-    Generate an Earth Engine tile URL template for the NDVI heatmap.
-    Returns a tile URL template like https://earthengine.googleapis.com/.../{z}/{x}/{y}
-    which Leaflet can use directly as a TileLayer — no expiry issues.
-    Returns None if no imagery available.
+    Generate a binary stress-zone tile layer: red = stressed (NDVI below
+    threshold), green = healthy. Farmers see exactly where to spray vs skip.
+    Returns EE tile URL template ({z}/{x}/{y}) for Leaflet TileLayer.
     """
     import ee
 
@@ -471,13 +473,27 @@ def get_ndvi_heatmap_url(farm_polygon, days_back: int = 15) -> str | None:
     try:
         if s2.size().getInfo() == 0:
             return None
-        ndvi = s2.median().normalizedDifference(["B8", "B4"]).rename("NDVI")
-        map_id = ndvi.getMapId({
-            "min": 0.0, "max": 0.8,
-            "palette": ["#d73027", "#f46d43", "#fdae61", "#fee08b",
-                        "#d9ef8b", "#a6d96a", "#66bd63", "#1a9850"],
-        })
-        # tile_fetcher gives a URL template with {z}/{x}/{y}
+
+        ndvi = s2.median().normalizedDifference(["B8", "B4"])
+
+        # Binary mask: 0 = stressed (spray), 1 = healthy (skip)
+        # Clipped to farm polygon so only the field shows, rest is transparent
+        stressed = ndvi.lt(stress_threshold).selfMask()
+        healthy  = ndvi.gte(stress_threshold).selfMask()
+
+        # Stack: stressed pixels red, healthy pixels green
+        # Use two-value palette trick: render stressed as 0→red, healthy as 1→green
+        combined = healthy.where(stressed, ee.Image(0)).blend(
+            healthy.multiply(ee.Image(0)).add(ee.Image(1)).updateMask(healthy)
+        )
+
+        # Simpler approach: visualize NDVI with just 2 bands of color
+        # stressed = red, healthy = semi-transparent green
+        stressed_vis = stressed.visualize(**{"palette": ["#ef5350"], "min": 1, "max": 1})
+        healthy_vis  = healthy.visualize(**{"palette": ["#66bb6a"], "min": 1, "max": 1})
+        zones = stressed_vis.blend(healthy_vis).clip(farm_polygon)
+
+        map_id = zones.getMapId({})
         return map_id["tile_fetcher"].url_format
     except Exception as e:
         print(f"  [warn] heatmap tile URL failed: {e}")
