@@ -199,8 +199,27 @@ def build_html(farm: dict, stats: dict) -> str:
         )
 
     # Per-plot stats
-    plot_stats     = stats.get("plot_stats") or []
+    plot_stats      = stats.get("plot_stats") or []
     plot_stats_json = json.dumps(plot_stats)
+
+    # Spray reduction
+    red              = stats.get("spray_reduction") or {}
+    red_count        = red.get("spray_count", 0)
+    red_sprayed      = red.get("total_sprayed_bigha", 0)
+    red_baseline     = red.get("baseline_bigha", 0)
+    red_saved_bh     = red.get("saved_bigha", 0)
+    red_pct          = red.get("reduction_pct", 0)
+    red_cost         = red.get("saved_cost_inr", 0)
+    red_events       = red.get("events", [])
+    red_events_html  = "".join(
+        f'<div class="red-event">'
+        f'<span class="red-ev-date">{e.get("date","")}</span>'
+        f'<span class="red-ev-area">{e.get("bigha","")} bh</span>'
+        f'<span class="red-ev-chem">{e.get("chemical","—")}</span>'
+        f'</div>'
+        for e in red_events[-5:]
+    )
+    farm_id_js = farm.get("id", "farm")
 
     badges = {
         "stress":      "🔴 Stress Detected",
@@ -476,6 +495,36 @@ textarea{{resize:vertical;min-height:58px}}
 .dis-date{{font-size:0.72em;color:#6070a0;font-weight:600}}
 .dis-badge{{font-size:0.68em;font-weight:700;padding:2px 6px;border-radius:10px;text-align:center;white-space:nowrap}}
 .dis-alert{{font-size:0.72em;color:#ffa726;padding:2px 0 2px 48px;margin-top:-2px;margin-bottom:2px}}
+
+/* ── Spray reduction tracker ───────────────────────────────── */
+.red-hero{{background:linear-gradient(135deg,#0a2010,#0d2a18);border:1px solid #1a4a28;border-radius:12px;padding:14px 16px;margin-bottom:10px;text-align:center}}
+.red-hero-pct{{font-size:2.8em;font-weight:900;color:#66bb6a;line-height:1}}
+.red-hero-label{{font-size:0.78em;color:#8a9bb0;margin-top:4px}}
+.red-stat-row{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px}}
+.red-stat{{background:#141824;border-radius:8px;padding:7px 8px;text-align:center}}
+.red-stat-val{{font-size:0.95em;font-weight:700}}
+.red-stat-lbl{{font-size:0.63em;color:#8a9bb0;margin-top:2px;line-height:1.2}}
+.red-events-title{{font-size:0.68em;font-weight:700;color:#4a5270;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}}
+.red-event{{display:grid;grid-template-columns:70px 44px 1fr;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid #0d1020;font-size:0.76em}}
+.red-event:last-child{{border-bottom:none}}
+.red-ev-date{{color:#6070a0}}
+.red-ev-area{{color:#4fc3f7;font-weight:600}}
+.red-ev-chem{{color:#b0b8d0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.btn-log-spray{{width:100%;background:#1a2a1a;border:1.5px dashed #2a5a2a;color:#66bb6a;border-radius:8px;padding:9px;font-size:0.82em;font-weight:600;cursor:pointer;transition:background .2s;margin-bottom:8px}}
+.btn-log-spray:hover{{background:#1e3a1e}}
+
+/* ── Log spray modal ────────────────────────────────────────── */
+#spray-modal{{position:fixed;inset:0;z-index:9000;background:#000000bb;display:none;align-items:center;justify-content:center}}
+#spray-modal.open{{display:flex}}
+.spray-modal-box{{background:#141824;border:1px solid #252836;border-radius:14px;padding:20px;width:min(360px,90vw);box-shadow:0 8px 32px #00000088}}
+.spray-modal-title{{font-size:1em;font-weight:700;margin-bottom:14px}}
+.spray-modal-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}}
+.spray-modal-full{{margin-bottom:10px}}
+.spray-modal-label{{font-size:0.72em;color:#8a9bb0;margin-bottom:4px}}
+.spray-modal-input{{width:100%;background:#0a0c14;border:1px solid #1e2235;border-radius:8px;padding:8px 10px;color:#e0e8f0;font-size:0.85em;box-sizing:border-box}}
+.spray-modal-actions{{display:flex;gap:8px;margin-top:6px}}
+.btn-spray-save{{flex:1;background:#1a4a1a;border:1px solid #2a6a2a;color:#66bb6a;border-radius:8px;padding:9px;font-weight:700;cursor:pointer}}
+.btn-spray-cancel{{background:#1a1f30;border:1px solid #252836;color:#6070a0;border-radius:8px;padding:9px 14px;cursor:pointer}}
 
 /* ── Per-plot stats ─────────────────────────────────────────── */
 .plot-stat-card{{background:#0a0c14;border:1px solid #1e2235;border-radius:10px;padding:10px 12px;margin-bottom:6px}}
@@ -1111,6 +1160,37 @@ textarea{{resize:vertical;min-height:58px}}
         )}
       </div>"""}
 
+      <!-- Spray Reduction Tracker -->
+      <div class="sec">
+        <div class="sec-title"><span class="sec-title-icon">💊</span> Pesticide Reduction · कीटनाशक बचत</div>
+        <button class="btn-log-spray" onclick="openSprayModal()">+ छिड़काव दर्ज करें · Log a spray event</button>
+        {"" if red_count == 0 else f"""
+        <div class='red-hero'>
+          <div class='red-hero-pct'>{red_pct}%</div>
+          <div class='red-hero-label'>pesticide reduction this season · इस सीजन कीटनाशक बचत</div>
+        </div>
+        <div class='red-stat-row'>
+          <div class='red-stat'>
+            <div class='red-stat-val' style='color:#4fc3f7'>{red_count}</div>
+            <div class='red-stat-lbl'>Sprays logged · छिड़काव</div>
+          </div>
+          <div class='red-stat'>
+            <div class='red-stat-val' style='color:#ffa726'>{red_sprayed} bh</div>
+            <div class='red-stat-lbl'>Area sprayed · क्षेत्र</div>
+          </div>
+          <div class='red-stat'>
+            <div class='red-stat-val' style='color:#66bb6a'>₹{red_cost:,}</div>
+            <div class='red-stat-lbl'>Cost saved · बचत</div>
+          </div>
+        </div>
+        <div class='red-events-title'>Recent sprays · हाल के छिड़काव</div>
+        {red_events_html}"""}
+        {"<div style='font-size:0.75em;color:#4a5270;text-align:center;padding:8px 0'>No sprays logged yet this season · अभी कोई छिड़काव दर्ज नहीं</div>" if red_count == 0 else ""}
+        <div style="font-size:0.68em;color:#4a5270;margin-top:8px">
+          💡 Also log via Telegram: <code>log spray &lt;bigha&gt; &lt;chemical&gt;</code>
+        </div>
+      </div>
+
       <!-- Forecast -->
       <div class="sec">
         <div class="sec-title"><span class="sec-title-icon">🌦️</span> 7-Day Forecast · मौसम पूर्वानुमान</div>
@@ -1123,6 +1203,35 @@ textarea{{resize:vertical;min-height:58px}}
     </div><!-- sb-body -->
   </div><!-- sidebar -->
 </div><!-- app -->
+
+<!-- Log Spray Modal -->
+<div id="spray-modal">
+  <div class="spray-modal-box">
+    <div class="spray-modal-title">💊 छिड़काव दर्ज करें · Log Spray Event</div>
+    <div class="spray-modal-grid">
+      <div>
+        <div class="spray-modal-label">Date · तारीख</div>
+        <input id="spray-date" type="date" class="spray-modal-input">
+      </div>
+      <div>
+        <div class="spray-modal-label">Area (bigha) · क्षेत्र</div>
+        <input id="spray-bigha" type="number" class="spray-modal-input" placeholder="e.g. 45">
+      </div>
+    </div>
+    <div class="spray-modal-full">
+      <div class="spray-modal-label">Chemical / दवाई</div>
+      <input id="spray-chemical" type="text" class="spray-modal-input" placeholder="e.g. Chlorpyrifos 2ml/L · नीम तेल">
+    </div>
+    <div class="spray-modal-full">
+      <div class="spray-modal-label">Zone / क्षेत्र (optional)</div>
+      <input id="spray-zone" type="text" class="spray-modal-input" placeholder="e.g. East Plot, full field">
+    </div>
+    <div class="spray-modal-actions">
+      <button class="btn-spray-save" onclick="saveSprayEvent()">✅ Save · सहेजें</button>
+      <button class="btn-spray-cancel" onclick="closeSprayModal()">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ── Map ───────────────────────────────────────────────────────────────────
@@ -1270,6 +1379,8 @@ L.tileLayer('https://mt{{s}}.google.com/vt/lyrs=h&x={{x}}&y={{y}}&z={{z}}', {{
 // ── NDVI heatmap overlay ──────────────────────────────────────────────────
 const HEATMAP_URL  = '{heatmap_url}';
 const PLOT_STATS   = {plot_stats_json};
+const FARM_ID      = '{farm_id_js}';
+const FARM_BIGHA   = {area_bigha};
 let heatmapLayer = null;
 let heatmapOn    = false;
 
@@ -2095,6 +2206,55 @@ function showLocToast(msg, color, duration) {{
   clearTimeout(locToastTimer);
   if (duration) locToastTimer = setTimeout(() => {{ t.style.display = 'none'; }}, duration);
 }}
+
+// ── Spray logger ──────────────────────────────────────────────────────────
+function openSprayModal() {{
+  document.getElementById('spray-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('spray-bigha').value = '';
+  document.getElementById('spray-chemical').value = '';
+  document.getElementById('spray-zone').value = '';
+  document.getElementById('spray-modal').classList.add('open');
+}}
+
+function closeSprayModal() {{
+  document.getElementById('spray-modal').classList.remove('open');
+}}
+
+function saveSprayEvent() {{
+  const date     = document.getElementById('spray-date').value;
+  const bigha    = parseFloat(document.getElementById('spray-bigha').value) || FARM_BIGHA;
+  const chemical = document.getElementById('spray-chemical').value.trim() || 'not specified';
+  const zone     = document.getElementById('spray-zone').value.trim() || 'full field';
+
+  // Save to localStorage (synced to monitor.py on next run via spray_logs/)
+  const key    = `spray_log_${{FARM_ID}}`;
+  const log    = JSON.parse(localStorage.getItem(key) || '[]');
+  const event  = {{
+    id:         'spray_' + Date.now(),
+    date,
+    bigha,
+    chemical,
+    zone_name:  zone,
+    logged_at:  new Date().toISOString(),
+    source:     'dashboard',
+  }};
+  log.push(event);
+  localStorage.setItem(key, JSON.stringify(log));
+
+  closeSprayModal();
+
+  // Show confirmation toast
+  const toast = document.createElement('div');
+  toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1a4a1a;border:1px solid #2a6a2a;color:#66bb6a;padding:10px 18px;border-radius:10px;font-size:0.85em;font-weight:600;z-index:9999;text-align:center';
+  toast.innerHTML = `✅ Spray logged: ${{bigha}} bigha · ${{chemical}}<br><span style="font-size:0.85em;color:#8a9bb0">Reload after running monitor.py to see updated stats</span>`;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}}
+
+// Close modal on backdrop click
+document.getElementById('spray-modal').addEventListener('click', function(e) {{
+  if (e.target === this) closeSprayModal();
+}});
 
 function locateMe() {{
   const btn = document.getElementById('btn-locate');

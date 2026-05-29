@@ -33,10 +33,12 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 
-ROOT       = Path(__file__).parent
-FARMS_FILE = ROOT / "farms.json"
-MAPS_DIR   = ROOT / "maps"
+ROOT          = Path(__file__).parent
+FARMS_FILE    = ROOT / "farms.json"
+MAPS_DIR      = ROOT / "maps"
+SPRAY_LOG_DIR = ROOT / "spray_logs"
 MAPS_DIR.mkdir(exist_ok=True)
+SPRAY_LOG_DIR.mkdir(exist_ok=True)
 
 GEE_PROJECT = os.environ.get("GEE_PROJECT", "agriculture-496920")
 
@@ -375,6 +377,12 @@ def get_farm_stats(farm: dict, days_back: int = 10) -> dict:
     # Per-plot satellite stats
     plot_stats   = _get_plot_stats(farm, days_back)
 
+    # Actual spray reduction from log
+    spray_reduction = compute_spray_reduction(
+        farm.get("id", "farm"), area_bigha,
+        season_start=farm.get("sowing_date")
+    )
+
     return {
         **sat,
         "area_bigha": area_bigha, "area_sqm": area_sqm,
@@ -387,6 +395,7 @@ def get_farm_stats(farm: dict, days_back: int = 10) -> dict:
         "crop_calendar": calendar,
         "disease_risk": disease_risk,
         "plot_stats": plot_stats,
+        "spray_reduction": spray_reduction,
     }
 
 
@@ -1396,6 +1405,8 @@ def main() -> None:
     parser.add_argument("--farm",   type=str, default=None)
     parser.add_argument("--days",   type=int, default=10)
     parser.add_argument("--force",  action="store_true")
+    parser.add_argument("--bot",    action="store_true",
+                        help="Run Telegram bot (photo pest ID + spray logging)")
     args = parser.parse_args()
 
     farms = load_farms()
@@ -1403,6 +1414,12 @@ def main() -> None:
         farms = [f for f in farms if f["id"] == args.farm]
         if not farms:
             raise SystemExit(f"Farm not found: {args.farm}")
+
+    # Bot mode — runs until Ctrl+C
+    if args.bot:
+        farm = farms[0]
+        run_telegram_bot(farm)
+        return
 
     for farm in farms:
         print(f"\n{'='*55}")
@@ -1463,6 +1480,295 @@ def main() -> None:
                 if dashboard_url:
                     print(f"  Dashboard: {dashboard_url}")
 
+
+# ---------------------------------------------------------------------------
+# Spray event log
+# ---------------------------------------------------------------------------
+
+def _spray_log_path(farm_id: str) -> Path:
+    return SPRAY_LOG_DIR / f"{farm_id}_sprays.json"
+
+
+def load_spray_log(farm_id: str) -> list[dict]:
+    p = _spray_log_path(farm_id)
+    if not p.exists():
+        return []
+    return json.loads(p.read_text())
+
+
+def save_spray_event(farm_id: str, event: dict) -> None:
+    """
+    Append a spray event. event = {date, bigha, chemical, zone_name, note}
+    """
+    log = load_spray_log(farm_id)
+    event["id"]         = f"spray_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    event["logged_at"]  = datetime.now(timezone.utc).isoformat()
+    log.append(event)
+    _spray_log_path(farm_id).write_text(json.dumps(log, indent=2))
+
+
+def compute_spray_reduction(farm_id: str, area_bigha: float, season_start: str | None = None) -> dict:
+    """
+    Compare actual sprayed bigha vs baseline (whole-field spraying every time).
+    Returns reduction stats for the season.
+    """
+    log = load_spray_log(farm_id)
+    if season_start:
+        try:
+            s = datetime.fromisoformat(season_start).replace(tzinfo=timezone.utc)
+            log = [e for e in log if datetime.fromisoformat(e["logged_at"]) >= s]
+        except Exception:
+            pass
+
+    if not log:
+        return {"spray_count": 0, "total_sprayed_bigha": 0, "baseline_bigha": 0,
+                "saved_bigha": 0, "reduction_pct": 0, "saved_cost_inr": 0, "events": []}
+
+    total_sprayed = sum(float(e.get("bigha", area_bigha)) for e in log)
+    # Baseline: if farmer had sprayed whole field every time
+    baseline      = area_bigha * len(log)
+    saved_bigha   = max(0, baseline - total_sprayed)
+    reduction_pct = round(saved_bigha / baseline * 100, 1) if baseline > 0 else 0
+    saved_cost    = round(saved_bigha * 300)  # ₹300/bigha avg spray cost MP
+
+    return {
+        "spray_count":         len(log),
+        "total_sprayed_bigha": round(total_sprayed, 1),
+        "baseline_bigha":      round(baseline, 1),
+        "saved_bigha":         round(saved_bigha, 1),
+        "reduction_pct":       reduction_pct,
+        "saved_cost_inr":      saved_cost,
+        "events":              log,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Telegram photo → Claude Vision pest/disease ID
+# ---------------------------------------------------------------------------
+
+def _identify_pest_with_claude(image_bytes: bytes, crop: str) -> str:
+    """
+    Send crop photo to Claude Vision API.
+    Returns bilingual diagnosis + treatment recommendation.
+    """
+    import base64
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return "⚠️ ANTHROPIC_API_KEY not set — cannot identify pest."
+
+    img_b64 = base64.standard_b64encode(image_bytes).decode()
+
+    payload = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 512,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64},
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        f"This is a photo from a {crop} field in Madhya Pradesh, India. "
+                        "Identify any pest, disease, or nutrient deficiency visible. "
+                        "Reply in this exact format:\n\n"
+                        "🔍 *Identification:* [name in English · हिंदी नाम]\n"
+                        "⚠️ *Severity:* [Low/Medium/High · कम/मध्यम/अधिक]\n"
+                        "💊 *Treatment:* [specific chemical/bio product, dose, method · हिंदी में]\n"
+                        "⏰ *When to spray:* [timing advice · कब करें]\n"
+                        "✅ *Prevention:* [one future prevention tip · रोकथाम]\n\n"
+                        "If the image is unclear or shows healthy crop, say so. "
+                        "Keep each line to one sentence. Be specific to MP farming conditions."
+                    ),
+                },
+            ],
+        }],
+    }
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["content"][0]["text"]
+    except Exception as e:
+        return f"⚠️ Vision API error: {e}"
+
+
+def _telegram_send(bot_token: str, chat_id: str, text: str) -> None:
+    requests.post(
+        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+        timeout=15,
+    )
+
+
+def _telegram_get_updates(bot_token: str, offset: int = 0) -> list[dict]:
+    resp = requests.get(
+        f"https://api.telegram.org/bot{bot_token}/getUpdates",
+        params={"offset": offset, "timeout": 30, "limit": 10},
+        timeout=40,
+    )
+    if resp.ok:
+        return resp.json().get("result", [])
+    return []
+
+
+def _telegram_download_photo(bot_token: str, file_id: str) -> bytes | None:
+    resp = requests.get(
+        f"https://api.telegram.org/bot{bot_token}/getFile",
+        params={"file_id": file_id}, timeout=15,
+    )
+    if not resp.ok:
+        return None
+    file_path = resp.json()["result"]["file_path"]
+    dl = requests.get(
+        f"https://api.telegram.org/file/bot{bot_token}/{file_path}",
+        timeout=30,
+    )
+    return dl.content if dl.ok else None
+
+
+def run_telegram_bot(farm: dict) -> None:
+    """
+    Long-poll Telegram for incoming messages.
+    - Photo message → Claude Vision pest ID → reply
+    - Text "log spray <bigha> <chemical>" → saves spray event → reply with confirmation
+    - Text "report" → sends latest stats summary
+    """
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id   = os.environ.get("TELEGRAM_CHAT_ID", "") or farm.get("telegram_chat_id", "")
+    crop      = farm.get("current_crop", "soybean")
+    farm_id   = farm.get("id", "farm")
+
+    if not all([bot_token, chat_id]):
+        print("  [skip] Telegram not configured"); return
+
+    print(f"\n🤖 Telegram bot running — send a crop photo to identify pests")
+    print(f"   Commands: 'log spray <bigha> <chemical>' | 'spray report' | 'report'")
+    print(f"   Press Ctrl+C to stop\n")
+
+    offset = 0
+    area_bigha = farm.get("area_bigha") or 137.8
+
+    while True:
+        try:
+            updates = _telegram_get_updates(bot_token, offset)
+        except KeyboardInterrupt:
+            print("\nBot stopped.")
+            break
+        except Exception as e:
+            print(f"  Poll error: {e}")
+            import time; time.sleep(5)
+            continue
+
+        for upd in updates:
+            offset = upd["update_id"] + 1
+            msg    = upd.get("message", {})
+            from_id = str(msg.get("chat", {}).get("id", ""))
+
+            # Only respond to authorized chat
+            if from_id != str(chat_id):
+                continue
+
+            # ── Photo message → pest ID ────────────────────────
+            if "photo" in msg:
+                # Use largest available photo
+                file_id = msg["photo"][-1]["file_id"]
+                caption = msg.get("caption", "")
+                print(f"  📸 Photo received (caption: '{caption}')")
+                _telegram_send(bot_token, chat_id,
+                    "🔍 Analyzing your crop photo... · फोटो का विश्लेषण हो रहा है...")
+                img = _telegram_download_photo(bot_token, file_id)
+                if img:
+                    result = _identify_pest_with_claude(img, crop)
+                    _telegram_send(bot_token, chat_id,
+                        f"📸 *Crop Photo Analysis · फसल फोटो विश्लेषण*\n\n{result}")
+                else:
+                    _telegram_send(bot_token, chat_id, "⚠️ Could not download photo. Please try again.")
+
+            # ── Text commands ──────────────────────────────────
+            elif "text" in msg:
+                text = msg["text"].strip().lower()
+                print(f"  💬 Message: '{text}'")
+
+                if text.startswith("log spray"):
+                    # Format: "log spray 45 chlorpyrifos" or "log spray 45"
+                    parts   = text.split()
+                    bigha   = float(parts[2]) if len(parts) > 2 else area_bigha
+                    chemical= " ".join(parts[3:]) if len(parts) > 3 else "not specified"
+                    event   = {
+                        "date":      datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "bigha":     bigha,
+                        "chemical":  chemical,
+                        "zone_name": "full field",
+                        "note":      caption if 'caption' in dir() else "",
+                    }
+                    save_spray_event(farm_id, event)
+                    red = compute_spray_reduction(farm_id, area_bigha)
+                    _telegram_send(bot_token, chat_id,
+                        f"✅ *Spray logged · छिड़काव दर्ज हुआ*\n\n"
+                        f"📅 Date: {event['date']}\n"
+                        f"🌾 Area: {bigha} bigha\n"
+                        f"💊 Chemical: {chemical}\n\n"
+                        f"📊 *Season total:* {red['spray_count']} sprays · "
+                        f"{red['total_sprayed_bigha']} bigha sprayed\n"
+                        f"💰 *Chemical saved:* {red['reduction_pct']}% · ₹{red['saved_cost_inr']:,}"
+                    )
+
+                elif text in ("spray report", "spray stats"):
+                    sowing = farm.get("sowing_date")
+                    red    = compute_spray_reduction(farm_id, area_bigha, season_start=sowing)
+                    lines  = [f"📊 *Spray Reduction Report · छिड़काव बचत रिपोर्ट*\n"]
+                    if red["spray_count"] == 0:
+                        lines.append("No sprays logged yet.\nSend: `log spray <bigha> <chemical>`")
+                    else:
+                        lines.append(f"🔢 Sprays this season: {red['spray_count']}")
+                        lines.append(f"🌾 Total area sprayed: {red['total_sprayed_bigha']} bigha")
+                        lines.append(f"📉 Baseline (full-field): {red['baseline_bigha']} bigha")
+                        lines.append(f"✅ Saved: {red['saved_bigha']} bigha ({red['reduction_pct']}% reduction)")
+                        lines.append(f"💰 Cost saved: ₹{red['saved_cost_inr']:,}")
+                        for e in red["events"][-3:]:
+                            lines.append(f"  • {e['date']} — {e['bigha']} bh · {e['chemical']}")
+                    _telegram_send(bot_token, chat_id, "\n".join(lines))
+
+                elif text == "help":
+                    _telegram_send(bot_token, chat_id,
+                        "🤖 *Agri Monitor Bot Commands*\n\n"
+                        "📸 Send a *photo* → pest/disease identification\n"
+                        "`log spray <bigha> <chemical>` → log a spray event\n"
+                        "`spray report` → see season reduction stats\n"
+                        "`report` → get latest farm stats\n\n"
+                        "फोटो भेजें → कीट/रोग पहचान\n"
+                        "`log spray 40 नीम तेल` → छिड़काव दर्ज करें"
+                    )
+
+                elif text == "report":
+                    _telegram_send(bot_token, chat_id,
+                        "⏳ Fetching latest data... · डेटा आ रहा है...")
+                    try:
+                        stats = get_farm_stats(farm)
+                        from dashboard import publish_dashboard
+                        url   = publish_dashboard(farm, stats)
+                        send_telegram_alert(farm, stats, dashboard_url=url)
+                    except Exception as e:
+                        _telegram_send(bot_token, chat_id, f"⚠️ Error: {e}")
+
+        import time; time.sleep(1)
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     main()
