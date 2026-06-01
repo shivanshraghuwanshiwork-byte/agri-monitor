@@ -181,6 +181,26 @@ def build_html(farm: dict, stats: dict) -> str:
         )
     cal_current_name = f'{cal_current.get("icon","")} {cal_current.get("name","")} · {cal_current.get("name_hi","")}' if cal_current else "—"
 
+    # Field events
+    field_events     = stats.get("field_events") or []
+    _ev_icons        = {"plough":"🚜","level":"🏞️","fym":"💩","basal":"🌿","sowing":"🌱",
+                        "irrigation":"💧","weeding":"✂️","topdress":"🧪","other":"📝"}
+    _ev_labels       = {"plough":"Ploughing · जुताई","level":"Levelling · लेवलिंग",
+                        "fym":"FYM · गोबर खाद","basal":"Basal fertiliser · बेसल खाद",
+                        "sowing":"Sowing · बुवाई","irrigation":"Irrigation · सिंचाई",
+                        "weeding":"Weeding · निराई","topdress":"Top dressing · टॉप ड्रेसिंग",
+                        "other":"Other · अन्य"}
+    field_events_html = "".join(
+        f'<div class="fev-row">'
+        f'<span class="fev-icon">{_ev_icons.get(e.get("type","other"),"📝")}</span>'
+        f'<span class="fev-label">{_ev_labels.get(e.get("type","other"),"Other")}</span>'
+        f'<span class="fev-date">{e.get("date","")}</span>'
+        f'{"<span class=fev-note>" + e["note"] + "</span>" if e.get("note") else ""}'
+        f'</div>'
+        for e in sorted(field_events, key=lambda x: x.get("date",""), reverse=True)[:8]
+    )
+    field_events_json = json.dumps(field_events)
+
     # Disease risk forecast
     disease_risk = stats.get("disease_risk") or []
     disease_html = ""
@@ -488,6 +508,26 @@ textarea{{resize:vertical;min-height:58px}}
 .cal-tl-name{{}}
 .cal-tl-date{{color:#4a5270;font-size:0.9em;white-space:nowrap}}
 .cal-tl-current .cal-tl-date{{color:#66bb6a}}
+
+/* ── Field events ───────────────────────────────────────────── */
+.fev-row{{display:grid;grid-template-columns:20px 1fr auto;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid #0d1020;font-size:0.78em}}
+.fev-row:last-child{{border-bottom:none}}
+.fev-icon{{font-size:1em;text-align:center}}
+.fev-label{{color:#b0b8d0}}
+.fev-date{{color:#4fc3f7;font-weight:600;white-space:nowrap;font-size:0.9em}}
+.fev-note{{grid-column:2/-1;font-size:0.85em;color:#6070a0;margin-top:-2px}}
+.btn-log-event{{width:100%;background:#1a1a2a;border:1.5px dashed #2a2a4a;color:#8a9bb0;border-radius:8px;padding:8px;font-size:0.82em;font-weight:600;cursor:pointer;transition:background .2s;margin-bottom:8px}}
+.btn-log-event:hover{{background:#1e1e38;color:#b0b8d0}}
+
+/* ── Field event modal ──────────────────────────────────────── */
+#event-modal{{position:fixed;inset:0;z-index:9000;background:#000000bb;display:none;align-items:center;justify-content:center}}
+#event-modal.open{{display:flex}}
+.event-modal-box{{background:#141824;border:1px solid #252836;border-radius:14px;padding:20px;width:min(360px,90vw);box-shadow:0 8px 32px #00000088}}
+.event-type-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}}
+.event-type-btn{{background:#0a0c14;border:1px solid #1e2235;border-radius:8px;padding:8px 4px;text-align:center;cursor:pointer;transition:all .15s;font-size:0.78em;color:#8a9bb0}}
+.event-type-btn:hover{{border-color:#4a5a8a;color:#b0b8d0}}
+.event-type-btn.selected{{border-color:#4fc3f7;background:#0d1a2a;color:#4fc3f7;font-weight:700}}
+.event-type-icon{{font-size:1.3em;display:block;margin-bottom:3px}}
 
 /* ── Disease risk ───────────────────────────────────────────── */
 .dis-row{{display:grid;grid-template-columns:42px 1fr 1fr;gap:5px;align-items:center;padding:4px 0;border-bottom:1px solid #0d1020}}
@@ -1107,6 +1147,15 @@ textarea{{resize:vertical;min-height:58px}}
         </div>
       </div>
 
+      <!-- Field Activity Log -->
+      <div class="sec">
+        <div class="sec-title"><span class="sec-title-icon">📋</span> खेत गतिविधि · Field Log</div>
+        <button class="btn-log-event" onclick="openEventModal()">+ गतिविधि दर्ज करें · Log field activity</button>
+        {"<div style='font-size:0.75em;color:#4a5270;text-align:center;padding:4px 0 8px'>No activities logged yet · अभी कुछ दर्ज नहीं</div>" if not field_events else ""}
+        {field_events_html}
+        {"" if not field_events else "<div style='font-size:0.68em;color:#4a5270;margin-top:6px'>💡 Also via Telegram: <code>log plough</code>, <code>log sowing</code>, <code>field log</code></div>"}
+      </div>
+
       <!-- Crop Calendar -->
       <div class="sec">
         <div class="sec-title"><span class="sec-title-icon">📅</span> फसल कैलेंडर · Crop Calendar</div>
@@ -1203,6 +1252,56 @@ textarea{{resize:vertical;min-height:58px}}
     </div><!-- sb-body -->
   </div><!-- sidebar -->
 </div><!-- app -->
+
+<!-- Field Event Modal -->
+<div id="event-modal">
+  <div class="event-modal-box">
+    <div class="spray-modal-title">📋 खेत गतिविधि दर्ज करें · Log Field Activity</div>
+    <div class="event-type-grid">
+      <div class="event-type-btn" data-type="plough" onclick="selectEventType(this)">
+        <span class="event-type-icon">🚜</span>Ploughing<br>जुताई
+      </div>
+      <div class="event-type-btn" data-type="level" onclick="selectEventType(this)">
+        <span class="event-type-icon">🏞️</span>Levelling<br>लेवलिंग
+      </div>
+      <div class="event-type-btn" data-type="fym" onclick="selectEventType(this)">
+        <span class="event-type-icon">💩</span>FYM<br>गोबर खाद
+      </div>
+      <div class="event-type-btn" data-type="basal" onclick="selectEventType(this)">
+        <span class="event-type-icon">🌿</span>Fertiliser<br>बेसल खाद
+      </div>
+      <div class="event-type-btn" data-type="irrigation" onclick="selectEventType(this)">
+        <span class="event-type-icon">💧</span>Irrigation<br>सिंचाई
+      </div>
+      <div class="event-type-btn" data-type="weeding" onclick="selectEventType(this)">
+        <span class="event-type-icon">✂️</span>Weeding<br>निराई
+      </div>
+      <div class="event-type-btn" data-type="sowing" onclick="selectEventType(this)">
+        <span class="event-type-icon">🌱</span>Sowing<br>बुवाई
+      </div>
+      <div class="event-type-btn" data-type="topdress" onclick="selectEventType(this)">
+        <span class="event-type-icon">🧪</span>Top dress<br>टॉप ड्रेस
+      </div>
+      <div class="event-type-btn" data-type="other" onclick="selectEventType(this)">
+        <span class="event-type-icon">📝</span>Other<br>अन्य
+      </div>
+    </div>
+    <div class="spray-modal-grid">
+      <div>
+        <div class="spray-modal-label">Date · तारीख</div>
+        <input id="event-date" type="date" class="spray-modal-input">
+      </div>
+      <div>
+        <div class="spray-modal-label">Note (optional) · नोट</div>
+        <input id="event-note" type="text" class="spray-modal-input" placeholder="e.g. 2 rounds deep">
+      </div>
+    </div>
+    <div class="spray-modal-actions">
+      <button class="btn-spray-save" onclick="saveFieldEvent()">✅ Save · सहेजें</button>
+      <button class="btn-spray-cancel" onclick="closeEventModal()">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <!-- Log Spray Modal -->
 <div id="spray-modal">
@@ -2254,6 +2353,66 @@ function saveSprayEvent() {{
 // Close modal on backdrop click
 document.getElementById('spray-modal').addEventListener('click', function(e) {{
   if (e.target === this) closeSprayModal();
+}});
+
+// ── Field event logger ────────────────────────────────────────────────────
+let selectedEventType = null;
+
+function openEventModal() {{
+  document.getElementById('event-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('event-note').value = '';
+  selectedEventType = null;
+  document.querySelectorAll('.event-type-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById('event-modal').classList.add('open');
+}}
+
+function closeEventModal() {{
+  document.getElementById('event-modal').classList.remove('open');
+}}
+
+function selectEventType(btn) {{
+  document.querySelectorAll('.event-type-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  selectedEventType = btn.dataset.type;
+}}
+
+function saveFieldEvent() {{
+  if (!selectedEventType) {{
+    alert('Please select an activity type · गतिविधि चुनें');
+    return;
+  }}
+  const date  = document.getElementById('event-date').value;
+  const note  = document.getElementById('event-note').value.trim();
+  const key   = `field_log_${{FARM_ID}}`;
+  const log   = JSON.parse(localStorage.getItem(key) || '[]');
+  const event = {{
+    id:        'ev_' + Date.now(),
+    type:      selectedEventType,
+    date,
+    note,
+    logged_at: new Date().toISOString(),
+    source:    'dashboard',
+  }};
+  log.push(event);
+  localStorage.setItem(key, JSON.stringify(log));
+  closeEventModal();
+
+  const labels = {{plough:'Ploughing · जुताई', level:'Levelling · लेवलिंग',
+    fym:'FYM · गोबर खाद', basal:'Fertiliser · बेसल खाद',
+    irrigation:'Irrigation · सिंचाई', weeding:'Weeding · निराई',
+    sowing:'Sowing · बुवाई', topdress:'Top dressing · टॉप ड्रेस', other:'Other · अन्य'}};
+  const icons  = {{plough:'🚜', level:'🏞️', fym:'💩', basal:'🌿',
+    irrigation:'💧', weeding:'✂️', sowing:'🌱', topdress:'🧪', other:'📝'}};
+
+  const toast = document.createElement('div');
+  toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1a1a3a;border:1px solid #2a2a5a;color:#b0b8f0;padding:10px 18px;border-radius:10px;font-size:0.85em;font-weight:600;z-index:9999;text-align:center';
+  toast.innerHTML = `${{icons[selectedEventType]}} Logged: ${{labels[selectedEventType]}}<br><span style="font-size:0.85em;color:#6070a0">${{date}}${{note ? ' · ' + note : ''}}</span>`;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}}
+
+document.getElementById('event-modal').addEventListener('click', function(e) {{
+  if (e.target === this) closeEventModal();
 }});
 
 function locateMe() {{

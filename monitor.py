@@ -378,10 +378,14 @@ def get_farm_stats(farm: dict, days_back: int = 10) -> dict:
     plot_stats   = _get_plot_stats(farm, days_back)
 
     # Actual spray reduction from log
+    farm_id = farm.get("id", "farm")
     spray_reduction = compute_spray_reduction(
-        farm.get("id", "farm"), area_bigha,
+        farm_id, area_bigha,
         season_start=farm.get("sowing_date")
     )
+
+    # Field events log (ploughing, sowing, fertiliser, etc.)
+    field_events = load_field_log(farm_id)
 
     return {
         **sat,
@@ -396,6 +400,7 @@ def get_farm_stats(farm: dict, days_back: int = 10) -> dict:
         "disease_risk": disease_risk,
         "plot_stats": plot_stats,
         "spray_reduction": spray_reduction,
+        "field_events": field_events,
     }
 
 
@@ -1485,6 +1490,45 @@ def main() -> None:
 # Spray event log
 # ---------------------------------------------------------------------------
 
+# Field event types: icon, label_en, label_hi
+FIELD_EVENT_TYPES = {
+    "plough":      ("🚜", "Ploughing",           "जुताई"),
+    "level":       ("🏞️", "Levelling / Laser",   "लेवलिंग"),
+    "fym":         ("💩", "FYM / Compost",        "गोबर खाद"),
+    "basal":       ("🌿", "Basal fertiliser",     "बेसल खाद"),
+    "sowing":      ("🌱", "Sowing",               "बुवाई"),
+    "irrigation":  ("💧", "Irrigation",           "सिंचाई"),
+    "weeding":     ("✂️", "Weeding",              "निराई"),
+    "topdress":    ("🧪", "Top dressing",         "टॉप ड्रेसिंग"),
+    "other":       ("📝", "Other",                "अन्य"),
+}
+
+
+def _field_log_path(farm_id: str) -> Path:
+    return SPRAY_LOG_DIR / f"{farm_id}_events.json"
+
+
+def load_field_log(farm_id: str) -> list[dict]:
+    p = _field_log_path(farm_id)
+    if not p.exists():
+        return []
+    return json.loads(p.read_text())
+
+
+def save_field_event(farm_id: str, event: dict) -> None:
+    """
+    Append a field event. event = {type, date, note, area_bigha (optional)}
+    type must be one of FIELD_EVENT_TYPES keys.
+    """
+    log = load_field_log(farm_id)
+    event["id"]        = f"ev_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    event["logged_at"] = datetime.now(timezone.utc).isoformat()
+    if event.get("type") not in FIELD_EVENT_TYPES:
+        event["type"] = "other"
+    log.append(event)
+    _field_log_path(farm_id).write_text(json.dumps(log, indent=2))
+
+
 def _spray_log_path(farm_id: str) -> Path:
     return SPRAY_LOG_DIR / f"{farm_id}_sprays.json"
 
@@ -1741,15 +1785,67 @@ def run_telegram_bot(farm: dict) -> None:
                             lines.append(f"  • {e['date']} — {e['bigha']} bh · {e['chemical']}")
                     _telegram_send(bot_token, chat_id, "\n".join(lines))
 
+                elif text.startswith("log ") and not text.startswith("log spray"):
+                    # "log plough", "log sowing", "log fym 2 tonnes notes..."
+                    # "log <type> [note]"
+                    parts    = text.split(None, 2)
+                    ev_type  = parts[1] if len(parts) > 1 else "other"
+                    note     = parts[2] if len(parts) > 2 else ""
+                    # normalise aliases
+                    aliases  = {"plow": "plough", "जुताई": "plough", "बुवाई": "sowing",
+                                "सिंचाई": "irrigation", "निराई": "weeding", "खाद": "basal"}
+                    ev_type  = aliases.get(ev_type, ev_type)
+                    type_info = FIELD_EVENT_TYPES.get(ev_type, FIELD_EVENT_TYPES["other"])
+                    event = {
+                        "type":  ev_type,
+                        "date":  datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "note":  note,
+                    }
+                    save_field_event(farm_id, event)
+                    icon, label_en, label_hi = type_info
+                    _telegram_send(bot_token, chat_id,
+                        f"{icon} *Field event logged · खेत गतिविधि दर्ज*\n\n"
+                        f"📋 {label_en} · {label_hi}\n"
+                        f"📅 {event['date']}\n"
+                        f"{('📝 ' + note) if note else ''}\n\n"
+                        f"All events this season:\n" +
+                        "\n".join(
+                            f"  {FIELD_EVENT_TYPES.get(e['type'],('📝','',''))[0]} {e['date']} — "
+                            f"{FIELD_EVENT_TYPES.get(e['type'],('','Other',''))[1]}"
+                            f"{(' · ' + e['note']) if e.get('note') else ''}"
+                            for e in load_field_log(farm_id)[-5:]
+                        )
+                    )
+
+                elif text == "field log":
+                    events = load_field_log(farm_id)
+                    if not events:
+                        _telegram_send(bot_token, chat_id,
+                            "No field events logged yet.\n"
+                            "Send: `log plough`, `log sowing`, `log irrigation`, etc.")
+                    else:
+                        lines = ["📋 *Field Events · खेत गतिविधियाँ*\n"]
+                        for e in events[-10:]:
+                            icon = FIELD_EVENT_TYPES.get(e["type"], ("📝",))[0]
+                            label = FIELD_EVENT_TYPES.get(e["type"], ("","Other",""))[1]
+                            lines.append(f"{icon} {e['date']} — {label}{(' · ' + e['note']) if e.get('note') else ''}")
+                        _telegram_send(bot_token, chat_id, "\n".join(lines))
+
                 elif text == "help":
                     _telegram_send(bot_token, chat_id,
                         "🤖 *Agri Monitor Bot Commands*\n\n"
-                        "📸 Send a *photo* → pest/disease identification\n"
-                        "`log spray <bigha> <chemical>` → log a spray event\n"
-                        "`spray report` → see season reduction stats\n"
-                        "`report` → get latest farm stats\n\n"
-                        "फोटो भेजें → कीट/रोग पहचान\n"
-                        "`log spray 40 नीम तेल` → छिड़काव दर्ज करें"
+                        "📸 Send a *photo* → pest/disease identification\n\n"
+                        "*Field events:*\n"
+                        "`log plough` → जुताई दर्ज करें\n"
+                        "`log sowing` → बुवाई दर्ज करें\n"
+                        "`log irrigation` → सिंचाई दर्ज करें\n"
+                        "`log fym` → गोबर खाद दर्ज करें\n"
+                        "`log weeding` → निराई दर्ज करें\n"
+                        "`field log` → सभी गतिविधियाँ देखें\n\n"
+                        "*Spray tracking:*\n"
+                        "`log spray <bigha> <chemical>` → छिड़काव दर्ज करें\n"
+                        "`spray report` → season reduction stats\n\n"
+                        "`report` → get latest farm stats"
                     )
 
                 elif text == "report":
